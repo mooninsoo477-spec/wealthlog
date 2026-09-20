@@ -35,7 +35,15 @@ async function fetchRow() {
   return rows[0].data;
 }
 
-async function fetchLatestPrice(code) {
+// 한국 종목코드는 항상 6자리(앞자리 0 포함)인데, 사용자가 입력할 때 앞자리 0이
+// 빠질 수 있다(예: "83561" → 실제로는 "083561"). data.go.kr의 likeSrtnCd는 앞자리
+// 일치(prefix) 검색이라 0이 빠지면 아예 매칭이 안 되므로 여기서 보정한다.
+function normalizeCode(code) {
+  return /^[0-9]+$/.test(code) ? code.padStart(6, "0") : code;
+}
+
+async function fetchLatestPrice(rawCode) {
+  const code = normalizeCode(rawCode);
   const end = new Date();
   const begin = new Date(end.getTime() - 9 * 86400000);
   const params = new URLSearchParams({
@@ -55,9 +63,11 @@ async function fetchLatestPrice(code) {
   if (header && header.resultCode !== "00") throw new Error(header.resultMsg || "API 오류");
   const raw = json?.response?.body?.items?.item;
   const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
-  if (!list.length) return null;
-  list.sort((a, b) => b.basDt.localeCompare(a.basDt));
-  const latest = list[0];
+  // likeSrtnCd는 앞자리 일치라 비슷한 코드가 여러 개 걸릴 수 있으므로 정확히 일치하는 것만 남긴다.
+  const exact = list.filter((x) => x.srtnCd === code);
+  if (!exact.length) return null;
+  exact.sort((a, b) => b.basDt.localeCompare(a.basDt));
+  const latest = exact[0];
   return {
     price: parseInt(latest.clpr, 10),
     date: `${latest.basDt.slice(0, 4)}-${latest.basDt.slice(4, 6)}-${latest.basDt.slice(6, 8)}`,
@@ -106,9 +116,15 @@ async function main() {
   }
 
   await pushStocks(stocks);
-  console.log(
-    `갱신 완료: ${updated}개 성공, ${failed.length}개 실패${failed.length ? " — " + failed.join(", ") : ""}`
-  );
+  const summary = `갱신 완료: ${updated}개 성공, ${failed.length}개 실패${failed.length ? " — " + failed.join(", ") : ""}`;
+  if (updated === 0 && failed.length > 0) {
+    // 스크립트 자체는 안 죽었지만 실질적으로 아무 것도 갱신 못 했으므로,
+    // Actions 화면에서 "성공"으로 조용히 묻히지 않도록 실패로 표시한다.
+    console.error(summary);
+    process.exitCode = 1;
+  } else {
+    console.log(summary);
+  }
 }
 
 main().catch((e) => {
