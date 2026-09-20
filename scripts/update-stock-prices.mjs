@@ -55,7 +55,7 @@ async function fetchLatestPrice(rawCode) {
     beginBasDt: ymd(begin),
     endBasDt: ymd(end),
   });
-  const url = `https://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo?${params}`;
+  const url = `https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2?${params}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const json = await res.json();
