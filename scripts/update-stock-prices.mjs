@@ -59,7 +59,13 @@ async function fetchYahoo(symbol) {
   for (let i = Math.min(timestamps.length, closes.length) - 1; i >= 0; i--) {
     const price = Number(closes[i]);
     if (Number.isFinite(price) && price > 0) {
-      return { price: Math.round(price), date: dateInKorea(timestamps[i]), symbol };
+      return {
+        price: Math.round(price),
+        nativePrice: price,
+        currency: result?.meta?.currency || null,
+        date: dateInKorea(timestamps[i]),
+        symbol,
+      };
     }
   }
   return null;
@@ -67,12 +73,35 @@ async function fetchYahoo(symbol) {
 
 async function fetchLatestPrice(rawCode) {
   const code = normalizeCode(rawCode);
-  if (!/^\d{6}$/.test(code)) return null;
+  if (!code) return null;
 
-  // 코스피·ETF(.KS)를 먼저 보고 없으면 코스닥(.KQ)을 확인한다.
-  for (const suffix of [".KS", ".KQ"]) {
-    const result = await fetchYahoo(code + suffix);
-    if (result) return result;
+  // 숫자 6자리와 0181L0 같은 영문 혼합 신형 단축코드는 국내 종목이다.
+  if (/^[0-9A-Z]{6}$/.test(code) && /\d/.test(code)) {
+    // 코스피·ETF(.KS)를 먼저 보고 없으면 코스닥(.KQ)을 확인한다.
+    for (const suffix of [".KS", ".KQ"]) {
+      const result = await fetchYahoo(code + suffix);
+      if (result) return result;
+    }
+    return null;
+  }
+
+  // AAPL, QQQM 같은 미국 티커는 달러 종가를 같은 시점의 원/달러 환율로 환산한다.
+  if (/^[A-Z][A-Z0-9.-]{0,9}$/.test(code)) {
+    const quote = await fetchYahoo(code);
+    if (!quote) return null;
+    if (quote.currency === "KRW") return quote;
+    if (quote.currency !== "USD") return null;
+    const fx = await fetchYahoo("KRW=X");
+    if (!fx) return null;
+    return {
+      price: Math.round(quote.nativePrice * fx.nativePrice),
+      date: quote.date,
+      symbol: code,
+      nativePrice: quote.nativePrice,
+      nativeCurrency: "USD",
+      fxRate: fx.nativePrice,
+      fxDate: fx.date,
+    };
   }
   return null;
 }
@@ -118,7 +147,15 @@ async function main() {
       }
       st.currentPrice = result.price;
       st.priceDate = result.date;
-      st.priceSource = "Yahoo Finance";
+      st.priceSource = result.nativeCurrency === "USD"
+        ? `Yahoo Finance (USD ${result.nativePrice.toFixed(2)} × 환율 ${result.fxRate.toFixed(2)})`
+        : "Yahoo Finance";
+      if (result.nativeCurrency === "USD") {
+        st.nativePrice = result.nativePrice;
+        st.nativeCurrency = result.nativeCurrency;
+        st.fxRate = result.fxRate;
+        st.fxDate = result.fxDate;
+      }
       st.err = null;
       updated++;
     } catch (e) {
