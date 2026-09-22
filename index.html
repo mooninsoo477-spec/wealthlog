@@ -198,6 +198,20 @@ input:focus,textarea:focus,select:focus{background:#fff;border-color:#9CC4FA;box
 .analysis-hero{background:linear-gradient(135deg,#152A4A,#244F86);color:#fff;border-radius:22px;padding:19px;margin-bottom:14px;box-shadow:0 12px 25px rgba(21,42,74,.16)}
 .analysis-hero .lbl{color:rgba(255,255,255,.68)}
 .analysis-hero .amount{font-size:26px;font-weight:850;margin-top:5px;letter-spacing:-.035em}
+.sync-strip{display:flex;align-items:center;justify-content:center;gap:7px;margin:-8px 0 17px;color:var(--ink3);font-size:11.5px;font-weight:650}
+.sync-dot{width:7px;height:7px;border-radius:50%;background:#AAB2BD;box-shadow:0 0 0 3px rgba(170,178,189,.13)}
+.sync-dot.ok{background:var(--up);box-shadow:0 0 0 3px rgba(0,167,111,.12)}
+.sync-dot.work{background:var(--amber);animation:pulse 1s ease-in-out infinite}.sync-dot.bad{background:var(--down)}
+@keyframes pulse{50%{opacity:.35}}
+.budget-card{background:linear-gradient(145deg,#FFFFFF,#F4F8FF);border-radius:22px;padding:18px;margin:14px 0;box-shadow:0 7px 22px rgba(49,130,246,.08)}
+.budget-top{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;margin-bottom:12px}
+.budget-remaining{font-size:23px;font-weight:850;letter-spacing:-.035em}
+.budget-row{margin-top:12px}.budget-row .rowline{font-size:12px;margin-bottom:5px}
+.budget-grid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
+.budget-input{background:#fff;border-radius:14px;padding:10px}
+.budget-input .lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.budget-input input{margin-top:4px;text-align:right;padding:8px 9px}
+.trend-card{background:#fff;border-radius:22px;padding:18px;margin:14px 0;box-shadow:0 6px 20px rgba(25,31,40,.05)}
 @media(max-width:380px){.hero-copy{max-width:78%}.mascot{width:88px;height:88px;right:8px}.tabs button{font-size:11.5px}.entry .cat{display:none}}
 </style>
 </head>
@@ -287,6 +301,8 @@ const DEFAULT={
   ],
   targets:[{id:uid(),stage:1,name:"1단계 — 미정",price:1500000000,years:5},
            {id:uid(),stage:2,name:"2단계 — 목동",price:3000000000,years:10}],
+  budgets:{monthlyTotal:0,categories:{}},
+  netWorthHistory:[],
   reports:{weekly:[],monthly:[],realEstate:[],stocks:[]},
   chat:[],
   settings:{provider:"gemini",apiKey:"",modelChain:"",modelIndex:0,modelDate:"",
@@ -295,6 +311,7 @@ const DEFAULT={
 };
 let S=JSON.parse(JSON.stringify(DEFAULT));
 let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, analysisView="finance";
+let syncState={status:"local",error:""};
 
 /* ══════════════ 저장소 (Claude storage → localStorage → Google Drive) ══════════════ */
 const hasClaudeStore = typeof window!=="undefined" && window.storage && typeof window.storage.get==="function";
@@ -305,8 +322,9 @@ async function loadLocal(){
   }catch(e){}
   return null;
 }
-async function saveLocal(d){
+async function saveLocal(d,track=true){
   try{
+    if(track){ d.meta={...(d.meta||{}),lastLocalSave:new Date().toISOString()}; }
     if(hasClaudeStore) await window.storage.set(KEY,JSON.stringify(d));
     else localStorage.setItem(KEY,JSON.stringify(d));
     return true;
@@ -322,7 +340,17 @@ function merge(base,inc){
   return o;
 }
 function sbReady(){ return sb && (S.settings.syncCode||"").trim(); }
-async function commit(){ await saveLocal(S); if(sbReady()) sbSave().catch(()=>{}); render(); }
+async function commit(){
+  touchNetWorthSnapshot();
+  await saveLocal(S);
+  if(sbReady()) syncState={status:"syncing",error:""};
+  render();
+  if(sbReady()){
+    try{ await sbSave(); }
+    catch(e){ syncState={status:"error",error:e.message||"동기화 실패"}; }
+    render();
+  }
+}
 
 /* ── Supabase 동기화 (동기화 코드 방식, 로그인 없음) ── */
 function sbLoadScript(){
@@ -342,21 +370,27 @@ async function sbInit(){
 }
 async function sbSave(){
   if(!sbReady()) return;
+  syncState={status:"syncing",error:""};
   const code=S.settings.syncCode.trim();
-  const { error } = await sb.from("wealth_data").upsert({ id:code, data:S, updated_at:new Date().toISOString() });
-  if(error) throw error;
+  const syncedAt=new Date().toISOString();
+  const payload={...S,meta:{...(S.meta||{}),lastSync:syncedAt}};
+  const { error } = await sb.from("wealth_data").upsert({ id:code, data:payload, updated_at:syncedAt });
+  if(error){ syncState={status:"error",error:error.message||"동기화 실패"}; throw error; }
+  S.meta=payload.meta;
+  syncState={status:"synced",error:""};
+  await saveLocal(S,false);
 }
 async function sbPull(){
   if(!sb){ const ok=await sbInit(); if(!ok){ notice="설정에서 Supabase URL과 anon key를 먼저 입력해 주세요."; return render(); } }
   const code=(S.settings.syncCode||"").trim();
   if(!code){ notice="동기화 코드를 먼저 정해서 입력해 주세요."; return render(); }
-  busy.sync=true; render();
+  busy.sync=true; syncState={status:"syncing",error:""}; render();
   try{
-    const { data, error } = await sb.from("wealth_data").select("data").eq("id",code).maybeSingle();
+    const { data, error } = await sb.from("wealth_data").select("data,updated_at").eq("id",code).maybeSingle();
     if(error) throw error;
-    if(data&&data.data){ S=merge(DEFAULT,data.data); await saveLocal(S); notice="Supabase에서 데이터를 불러왔습니다."; }
+    if(data&&data.data){ S=merge(DEFAULT,data.data); S.meta={...(S.meta||{}),lastSync:data.updated_at||new Date().toISOString()}; touchNetWorthSnapshot(); await saveLocal(S); syncState={status:"synced",error:""}; notice="Supabase에서 데이터를 불러왔습니다."; }
     else { await sbSave(); notice="이 코드로 처음 연결했습니다. 이 기기의 데이터를 올렸어요."; }
-  }catch(e){ notice="동기화 중 문제가 생겼습니다: "+(e.message||""); }
+  }catch(e){ syncState={status:"error",error:e.message||"동기화 실패"}; notice="동기화 중 문제가 생겼습니다: "+(e.message||""); }
   busy.sync=false; render();
 }
 async function sbPush(){
@@ -469,6 +503,35 @@ function calc(){
   const totalAssets=re+stocksSum+othersSum;
   const totalDebt=bankDebt+familyDebt;
   return {ls,bankDebt,familyDebt,repaid,cardAdd,stocksSum,othersSum,re,totalAssets,totalDebt,net:totalAssets-totalDebt};
+}
+function touchNetWorthSnapshot(){
+  const c=calc(), m=ym(today());
+  S.netWorthHistory=Array.isArray(S.netWorthHistory)?S.netWorthHistory:[];
+  const snap={ym:m,date:today(),net:Math.round(c.net),assets:Math.round(c.totalAssets),debt:Math.round(c.totalDebt)};
+  const i=S.netWorthHistory.findIndex(x=>x.ym===m);
+  const before=i>=0?JSON.stringify(S.netWorthHistory[i]):"";
+  if(i>=0) S.netWorthHistory[i]=snap; else S.netWorthHistory.push(snap);
+  S.netWorthHistory=S.netWorthHistory.sort((a,b)=>a.ym.localeCompare(b.ym)).slice(-36);
+  return i<0||before!==JSON.stringify(snap);
+}
+function savedTime(v){
+  if(!v)return "저장 전";
+  const d=new Date(v), n=new Date(), same=d.toDateString()===n.toDateString();
+  return `${same?"오늘":`${d.getMonth()+1}.${d.getDate()}`} ${d.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})}`;
+}
+function syncStrip(){
+  const configured=!!(S.settings.supabaseUrl&&S.settings.supabaseKey&&S.settings.syncCode);
+  if(syncState.status==="syncing") return `<div class="sync-strip"><i class="sync-dot work"></i>Supabase에 저장 중…</div>`;
+  if(syncState.status==="error") return `<div class="sync-strip" title="${esc(syncState.error)}"><i class="sync-dot bad"></i>동기화 실패 · 이 기기에는 저장됨</div>`;
+  if(configured&&S.meta?.lastSync) return `<div class="sync-strip"><i class="sync-dot ok"></i>동기화됨 · ${savedTime(S.meta.lastSync)}</div>`;
+  return `<div class="sync-strip"><i class="sync-dot"></i>이 기기에 저장됨 · ${savedTime(S.meta?.lastLocalSave)}</div>`;
+}
+function budgetInfo(){
+  const cfg=S.budgets||{monthlyTotal:0,categories:{}}, cats=cfg.categories||{};
+  const rows=EXP_CATS.map(cat=>({cat,budget:+cats[cat]||0,spent:S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&ym(t.date)===ym(today())&&t.cat===cat).reduce((a,b)=>a+b.amount,0)}));
+  const catTotal=rows.reduce((a,b)=>a+b.budget,0), total=+cfg.monthlyTotal||catTotal;
+  const spent=rows.reduce((a,b)=>a+b.spent,0);
+  return {rows,total,spent,remaining:total-spent,pct:total?spent/total*100:0};
 }
 function catRows(from){
   const m={};
@@ -618,6 +681,7 @@ function render(){
   <div class="tabs main-tabs" role="tablist">
     ${["홈","기록","자산","더보기"].map(t=>`<button role="tab" aria-selected="${t===tab||(t==="더보기"&&["상담","리포트","설정"].includes(tab))}" data-tab="${t}">${t}</button>`).join("")}
   </div>`;
+  h+=syncStrip();
 
   if(notice) h+=`<div class="note ${/실패|문제|못|오류/.test(notice)?"err":"info"}">${esc(notice)}</div>`;
 
@@ -670,6 +734,20 @@ function render(){
           ${bar(p,"#BDD3D8")}</div>`;
       });
     }
+    const bi=budgetInfo();
+    if(bi.total){
+      const active=bi.rows.filter(r=>r.budget>0).sort((a,b)=>(b.spent/b.budget)-(a.spent/a.budget)).slice(0,3);
+      h+=`<div class="budget-card"><div class="budget-top"><div><div class="lbl">이번 달 남은 예산</div><div class="budget-remaining" style="color:${bi.remaining<0?'var(--down)':'var(--ink)'}">${bi.remaining<0?'초과 ':''}${won(Math.abs(bi.remaining))}원</div></div><div class="muted">${Math.round(bi.pct)}% 사용</div></div>
+        <div class="bar"><i style="width:${Math.min(100,bi.pct)}%;background:${bi.pct>100?'var(--down)':bi.pct>80?'var(--amber)':'var(--accent)'}"></i></div>
+        <div class="rowline faint" style="margin-top:7px"><span>사용 ${won(bi.spent)}원</span><span>예산 ${won(bi.total)}원</span></div>
+        ${active.map(r=>`<div class="budget-row"><div class="rowline"><span>${esc(r.cat)}</span><span style="color:${r.spent>r.budget?'var(--down)':'var(--ink2)'}">${won(r.spent)} / ${won(r.budget)}</span></div><div class="bar"><i style="width:${Math.min(100,r.spent/r.budget*100)}%;background:${r.spent>r.budget?'var(--down)':CAT_COLOR[r.cat]||'var(--accent)'}"></i></div></div>`).join("")}
+      </div>`;
+    }else{
+      h+=`<div class="budget-card"><div class="rowline"><div><strong>월 예산을 정해보세요</strong><div class="faint" style="margin-top:5px">남은 생활비를 홈에서 바로 확인할 수 있어요.</div></div><button class="edit-pill" data-openbudget>설정</button></div></div>`;
+    }
+    const nh=(S.netWorthHistory||[]).slice(-12);
+    h+=`<div class="trend-card"><div class="rowline"><div><strong>순자산 변화</strong><div class="faint" style="margin-top:4px">매월 자동으로 기록됩니다.</div></div><span class="num" style="color:${nh.length>1&&nh[nh.length-1].net>=nh[nh.length-2].net?'var(--up)':'var(--ink2)'}">${nh.length>1?`${nh[nh.length-1].net>=nh[nh.length-2].net?'+':'−'}${won(Math.abs(nh[nh.length-1].net-nh[nh.length-2].net))}원`:"첫 기록"}</span></div>
+      <div style="margin-top:12px">${trendChart(nh.map(x=>x.ym),nh.map(x=>x.net),"#3182F6",nh.length>1?"최근 "+nh.length+"개월":"이번 달부터 추이를 기록해요")}</div></div>`;
     h+=`<div class="grid2" style="margin-top:22px">
       <div class="card"><div class="lbl">이번 달 지출</div><div class="num" style="font-size:19px;color:var(--down)">${won(spent)}</div></div>
       <div class="card"><div class="lbl">이번 달 수입</div><div class="num" style="font-size:19px;color:var(--up)">${won(earned)}</div></div>
@@ -678,8 +756,8 @@ function render(){
       <button class="quick-btn expense" data-quick="expense"><b>− 지출</b>빠르게 기록하기</button>
       <button class="quick-btn income" data-quick="income"><b>＋ 수입</b>빠르게 기록하기</button>
     </div>`;
-    if(isSunday()) h+=`<div class="note info">오늘은 일요일이에요. 리포트 탭에서 이번 주 재무 리포트를 받아보세요.</div>`;
-    else if(isMonthEnd()) h+=`<div class="note info">월말이 다가왔어요. 리포트 탭에서 월간 리포트와 부동산·주식 브리핑을 받아보세요.</div>`;
+    if(isSunday()) h+=`<div class="note info">오늘은 일요일이에요. 더보기 → 분석에서 이번 주 재무 분석을 받아보세요.</div>`;
+    else if(isMonthEnd()) h+=`<div class="note info">월말이 다가왔어요. 더보기 → 분석에서 월간 재무와 시장 브리핑을 확인해 보세요.</div>`;
   }
 
   /* ───── 더보기 ───── */
@@ -958,7 +1036,15 @@ function render(){
 
   /* ───── 설정 ───── */
   if(tab==="설정"){
-    h+=`<div class="subpage-head"><button data-tab="더보기" aria-label="뒤로">‹</button><strong>설정</strong></div><div class="faint" style="margin-bottom:13px">아래 내용은 분석과 조언을 만들 때 항상 함께 전달됩니다. 언제든 고치면 다음 조언부터 반영돼요.</div>
+    const bi=budgetInfo();
+    h+=`<div class="subpage-head"><button data-tab="더보기" aria-label="뒤로">‹</button><strong>설정</strong></div>
+    <div class="sec" id="budgetSettings" style="margin-top:2px">월 예산</div>
+    <div class="card"><div class="field"><div class="lbl">한 달 전체 예산</div><input type="text" class="amt" id="budgetTotal" inputmode="numeric" value="${S.budgets?.monthlyTotal?won(S.budgets.monthlyTotal):''}" placeholder="예: 2,000,000"></div>
+      <div class="faint">전체 예산을 비워두면 아래 카테고리 예산의 합계를 사용합니다.</div>
+      <details class="weekgroup" style="box-shadow:none;border:1px solid var(--line);margin-top:13px"><summary><span>카테고리별 예산</span><span class="weekmeta">${won(bi.rows.reduce((a,b)=>a+b.budget,0))}원</span></summary><div class="weekbody"><div class="budget-grid">
+        ${bi.rows.map(r=>`<label class="budget-input"><span class="lbl">${esc(r.cat)}</span><input type="text" inputmode="numeric" data-budget-cat="${esc(r.cat)}" value="${r.budget?won(r.budget):''}" placeholder="0"></label>`).join("")}
+      </div></div></details></div>
+    <div class="faint" style="margin:6px 2px 17px">아래 내용은 분석과 조언을 만들 때 항상 함께 전달됩니다. 언제든 고치면 다음 조언부터 반영돼요.</div>
     <div class="card"><div class="lbl">코칭 참고사항 — 조언할 때 지켜야 할 것</div>
       <textarea rows="4" data-prof="coachNote">${esc(S.profile.coachNote)}</textarea></div>
     <div class="card"><div class="lbl">생활 배경</div>
@@ -982,7 +1068,7 @@ function render(){
         <button class="btn ghost" id="sbpull" ${busy.sync?"disabled":""}>${spin(busy.sync,busy.sync?"불러오는 중…":"이 코드로 불러오기")}</button>
         <button class="btn ghost" id="sbpush">지금 올리기</button>
       </div>
-      ${sbReady()?`<div class="faint" style="margin-top:8px;color:var(--up)">연결됨 — 저장할 때마다 자동으로 올라갑니다.</div>`:""}
+      <div class="note ${syncState.status==="error"?'err':'info'}" style="margin:12px 0 0">${S.meta?.lastLocalSave?`이 기기 저장: ${savedTime(S.meta.lastLocalSave)}`:'아직 저장 기록이 없습니다.'}${S.meta?.lastSync?`<br>Supabase 동기화: ${savedTime(S.meta.lastSync)}`:'<br>Supabase 동기화 기록 없음'}</div>
     </div>
 
     <div class="sec">AI 제공자</div>
@@ -1048,6 +1134,7 @@ function bind(){
   $$("[data-tab]").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;notice="";render()});
   $$("[data-moretab]").forEach(b=>b.onclick=()=>{tab=b.dataset.moretab;notice="";render()});
   $$("[data-quick]").forEach(b=>b.onclick=()=>{txView=b.dataset.quick;tab="기록";render();setTimeout(()=>document.querySelector("#txin")?.focus(),0)});
+  $$("[data-openbudget]").forEach(b=>b.onclick=()=>{tab="설정";render();setTimeout(()=>document.querySelector("#budgetSettings")?.scrollIntoView({behavior:"smooth"}),0)});
   $$("[data-txview]").forEach(b=>b.onclick=()=>{txView=b.dataset.txview;render()});
   $$("[data-analysisview]").forEach(b=>b.onclick=()=>{analysisView=b.dataset.analysisview;render()});
   $$("[data-acc]").forEach(b=>b.onclick=()=>{openDebt=openDebt===b.dataset.acc?null:b.dataset.acc;render()});
@@ -1083,6 +1170,8 @@ function bind(){
   if($("#rename")) $("#rename").onchange=async e=>{S.realEstate.name=e.target.value;await commit()};
   if($("#refreshprice")) $("#refreshprice").onclick=refreshPrice;
   if($("#toggleAssetEdit")) $("#toggleAssetEdit").onclick=()=>{assetEdit=!assetEdit;render()};
+  if($("#budgetTotal")) $("#budgetTotal").onchange=async e=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.monthlyTotal=+e.target.value.replace(/[^\d]/g,"")||0;await commit()};
+  $$("[data-budget-cat]").forEach(el=>el.onchange=async()=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.categories=S.budgets.categories||{};S.budgets.categories[el.dataset.budgetCat]=+el.value.replace(/[^\d]/g,"")||0;await commit()});
 
   $$("[data-stacct-tab]").forEach(el=>el.onclick=()=>{ stockAcctTab=el.dataset.stacctTab; render(); });
   if($("#addstock")) $("#addstock").onclick=async()=>{
@@ -1430,7 +1519,9 @@ function migrateOnce(){
 (async function(){
   const saved=await loadLocal();
   if(saved) S=merge(DEFAULT,saved);
-  if(migrateOnce()){ await saveLocal(S); if(sbReady()) sbSave().catch(()=>{}); }
+  const changed=migrateOnce();
+  const snapshotChanged=touchNetWorthSnapshot();
+  if(changed||snapshotChanged) await saveLocal(S);
   render();
   if(S.settings.supabaseUrl&&S.settings.supabaseKey&&S.settings.syncCode){ await sbPull(); }
 })();
