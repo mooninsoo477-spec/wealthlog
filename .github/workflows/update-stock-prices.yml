@@ -2,13 +2,18 @@ name: 주식 시세 자동 갱신
 
 on:
   schedule:
-    # 05:30 UTC = 14:30 KST, 평일. 공공데이터포털 종가는 기준일 다음 영업일 13시 이후 갱신됨.
-    - cron: '30 5 * * 1-5'
+    # 공공데이터포털 종가는 기준일 다음 영업일 13시 이후 갱신됨.
+    - cron: '30 14 * * 1-5'
+      timezone: 'Asia/Seoul'
   workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
   update-prices:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -17,7 +22,7 @@ jobs:
       - name: 종가 조회 후 Supabase 갱신
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           SYNC_CODE: ${{ secrets.SYNC_CODE }}
           DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
         run: node scripts/update-stock-prices.mjs
