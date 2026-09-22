@@ -4,7 +4,7 @@
 // 공공데이터포털 금융위원회_주식시세정보 API로 종가를 조회해 되돌려 쓴다.
 // 되돌려 쓸 때는 update_stock_prices RPC(Postgres 함수)를 통해 stocks 필드만
 // jsonb_set으로 교체한다 — 그 사이 앱에서 바뀐 다른 필드(tx, profile 등)를
-// 통째로 덮어쓰지 않기 위함. RPC 정의는 README.md 참고.
+// 통째로 덮어쓰지 않기 위함. RPC 정의는 supabase/setup-stock-price-rpc.sql 참고.
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -16,9 +16,13 @@ function requireEnv(name) {
 }
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL").replace(/\/$/, "");
-const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
+const SUPABASE_SECRET_KEY = requireEnv("SUPABASE_SECRET_KEY");
 const SYNC_CODE = requireEnv("SYNC_CODE");
 const DATA_GO_KR_KEY = requireEnv("DATA_GO_KR_KEY");
+
+// 새 Supabase Secret key는 JWT가 아니므로 Authorization 헤더가 아니라
+// apikey 헤더에만 보낸다. 키는 GitHub Secrets에만 저장한다.
+const supabaseHeaders = { apikey: SUPABASE_SECRET_KEY };
 
 function ymd(d) {
   return d.toISOString().slice(0, 10).replace(/-/g, "");
@@ -27,7 +31,7 @@ function ymd(d) {
 async function fetchRow() {
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/wealth_data?id=eq.${encodeURIComponent(SYNC_CODE)}&select=data`,
-    { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } }
+    { headers: supabaseHeaders }
   );
   if (!res.ok) throw new Error(`Supabase 조회 실패: ${res.status} ${await res.text()}`);
   const rows = await res.json();
@@ -78,8 +82,7 @@ async function pushStocks(stocks) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/update_stock_prices`, {
     method: "POST",
     headers: {
-      apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      ...supabaseHeaders,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ p_id: SYNC_CODE, p_stocks: stocks }),
@@ -103,6 +106,15 @@ async function main() {
       const result = await fetchLatestPrice(st.code);
       if (!result) {
         failed.push(`${st.name || st.code}(데이터 없음)`);
+        continue;
+      }
+      if (!Number.isFinite(result.price) || result.price <= 0) {
+        failed.push(`${st.name || st.code}(잘못된 종가)`);
+        continue;
+      }
+      // 휴일이나 API 지연으로 더 오래된 값이 돌아오면 현재 값을 덮어쓰지 않는다.
+      if (st.priceDate && result.date < st.priceDate) {
+        failed.push(`${st.name || st.code}(기존 날짜보다 오래된 데이터)`);
         continue;
       }
       st.currentPrice = result.price;

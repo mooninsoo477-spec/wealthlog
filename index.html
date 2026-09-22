@@ -645,8 +645,8 @@ function render(){
     </div>
 
     <div class="sec">주식 · ETF <span class="muted" style="font-weight:400">${won(c.stocksSum)}원</span></div>
-    <div class="faint" style="margin-bottom:9px">하루에 한 번, AI가 전날(또는 가장 최근 거래일) 종가를 웹 검색으로 찾아 제안해줘요. 바로 반영하지 않고, 이전 가격과 비교해서 확인한 뒤 적용합니다.</div>
-    <div class="btnrow" style="margin-bottom:14px"><button class="btn ghost tiny" id="fetchprices" ${busy.stocks?"disabled":""}>${spin(busy.stocks,busy.stocks?"검색 중…":"오늘 시세 조회")}</button></div>
+    <div class="faint" style="margin-bottom:9px">Supabase 자동 갱신을 설정하면 평일마다 마지막 거래일 종가가 반영돼요. 아래 AI 조회는 자동 갱신이 실패했을 때 확인하는 보조 기능입니다.</div>
+    <div class="btnrow" style="margin-bottom:14px"><button class="btn ghost tiny" id="fetchprices" ${busy.stocks?"disabled":""}>${spin(busy.stocks,busy.stocks?"검색 중…":"AI로 시세 확인")}</button></div>
 
     ${window.__priceReview ? `
     <div class="card" style="margin-bottom:14px">
