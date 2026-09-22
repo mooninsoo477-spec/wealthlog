@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// GitHub Actions cron이 매 평일 오후 실행. 보유 종목 목록은 브라우저 localStorage에만
-// 있으므로, 이미 연결된 Supabase 동기화 테이블(wealth_data)에서 읽어온 뒤
-// 공공데이터포털 금융위원회_주식시세정보 API로 종가를 조회해 되돌려 쓴다.
+// GitHub Actions cron이 매 평일 장 마감 뒤 실행. 보유 종목 목록은 브라우저
+// localStorage에만 있으므로, 연결된 Supabase 동기화 테이블(wealth_data)에서
+// 읽어온 뒤 Yahoo Finance 일봉의 마지막 종가를 조회해 되돌려 쓴다.
 // 되돌려 쓸 때는 update_stock_prices RPC(Postgres 함수)를 통해 stocks 필드만
 // jsonb_set으로 교체한다 — 그 사이 앱에서 바뀐 다른 필드(tx, profile 등)를
 // 통째로 덮어쓰지 않기 위함. RPC 정의는 supabase/setup-stock-price-rpc.sql 참고.
@@ -18,15 +18,10 @@ function requireEnv(name) {
 const SUPABASE_URL = requireEnv("SUPABASE_URL").replace(/\/$/, "");
 const SUPABASE_SECRET_KEY = requireEnv("SUPABASE_SECRET_KEY");
 const SYNC_CODE = requireEnv("SYNC_CODE");
-const DATA_GO_KR_KEY = requireEnv("DATA_GO_KR_KEY");
 
 // 새 Supabase Secret key는 JWT가 아니므로 Authorization 헤더가 아니라
 // apikey 헤더에만 보낸다. 키는 GitHub Secrets에만 저장한다.
 const supabaseHeaders = { apikey: SUPABASE_SECRET_KEY };
-
-function ymd(d) {
-  return d.toISOString().slice(0, 10).replace(/-/g, "");
-}
 
 async function fetchRow() {
   const res = await fetch(
@@ -39,43 +34,47 @@ async function fetchRow() {
   return rows[0].data;
 }
 
-// 한국 종목코드는 항상 6자리(앞자리 0 포함)인데, 사용자가 입력할 때 앞자리 0이
-// 빠질 수 있다(예: "83561" → 실제로는 "083561"). data.go.kr의 likeSrtnCd는 앞자리
-// 일치(prefix) 검색이라 0이 빠지면 아예 매칭이 안 되므로 여기서 보정한다.
+// 한국 종목코드는 항상 6자리(앞자리 0 포함)다.
 function normalizeCode(code) {
-  return /^[0-9]+$/.test(code) ? code.padStart(6, "0") : code;
+  const value = String(code || "").trim().toUpperCase();
+  return /^[0-9]+$/.test(value) ? value.padStart(6, "0") : value;
+}
+
+function dateInKorea(unixSeconds) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(new Date(unixSeconds * 1000));
+  const value = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+async function fetchYahoo(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=10d&interval=1d&events=history`;
+  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 Wealthlog/1.0" } });
+  if (!res.ok) return null;
+  const json = await res.json();
+  const result = json?.chart?.result?.[0];
+  const timestamps = result?.timestamp || [];
+  const closes = result?.indicators?.quote?.[0]?.close || [];
+  for (let i = Math.min(timestamps.length, closes.length) - 1; i >= 0; i--) {
+    const price = Number(closes[i]);
+    if (Number.isFinite(price) && price > 0) {
+      return { price: Math.round(price), date: dateInKorea(timestamps[i]), symbol };
+    }
+  }
+  return null;
 }
 
 async function fetchLatestPrice(rawCode) {
   const code = normalizeCode(rawCode);
-  const end = new Date();
-  const begin = new Date(end.getTime() - 9 * 86400000);
-  const params = new URLSearchParams({
-    serviceKey: DATA_GO_KR_KEY,
-    numOfRows: "20",
-    pageNo: "1",
-    resultType: "json",
-    likeSrtnCd: code,
-    beginBasDt: ymd(begin),
-    endBasDt: ymd(end),
-  });
-  const url = `https://apis.data.go.kr/1160100/GetStockSecuritiesInfoService_V2/getStockPriceInfo_V2?${params}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const json = await res.json();
-  const header = json?.response?.header;
-  if (header && header.resultCode !== "00") throw new Error(header.resultMsg || "API 오류");
-  const raw = json?.response?.body?.items?.item;
-  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
-  // likeSrtnCd는 앞자리 일치라 비슷한 코드가 여러 개 걸릴 수 있으므로 정확히 일치하는 것만 남긴다.
-  const exact = list.filter((x) => x.srtnCd === code);
-  if (!exact.length) return null;
-  exact.sort((a, b) => b.basDt.localeCompare(a.basDt));
-  const latest = exact[0];
-  return {
-    price: parseInt(latest.clpr, 10),
-    date: `${latest.basDt.slice(0, 4)}-${latest.basDt.slice(4, 6)}-${latest.basDt.slice(6, 8)}`,
-  };
+  if (!/^\d{6}$/.test(code)) return null;
+
+  // 코스피·ETF(.KS)를 먼저 보고 없으면 코스닥(.KQ)을 확인한다.
+  for (const suffix of [".KS", ".KQ"]) {
+    const result = await fetchYahoo(code + suffix);
+    if (result) return result;
+  }
+  return null;
 }
 
 async function pushStocks(stocks) {
@@ -119,6 +118,7 @@ async function main() {
       }
       st.currentPrice = result.price;
       st.priceDate = result.date;
+      st.priceSource = "Yahoo Finance";
       st.err = null;
       updated++;
     } catch (e) {
