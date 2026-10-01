@@ -230,6 +230,10 @@ input:focus,textarea:focus,select:focus{background:#fff;border-color:#9CC4FA;box
 .acct-tabs button{display:flex;align-items:center;justify-content:center;gap:5px}
 .acct-chip{font-size:11px;font-weight:750;padding:3px 8px;border-radius:7px;white-space:nowrap}
 .stock-card{padding:13px 15px 13px 19px;margin-bottom:8px;box-shadow:inset 4px 0 0 var(--acct),0 5px 20px rgba(25,31,40,.055)}
+.check-row{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line2);font-size:13.5px;line-height:1.6}
+.check-row:first-of-type{border-top:0;margin-top:6px}
+.check-dot{flex:0 0 8px;width:8px;height:8px;border-radius:50%;margin-top:7px;background:var(--ink3)}
+.check-dot.ok{background:var(--up)}.check-dot.warn{background:var(--amber)}.check-dot.bad{background:var(--down)}.check-dot.info{background:var(--accent)}
 @media(max-width:380px){.hero-copy{max-width:78%}.mascot{width:88px;height:88px;right:8px}.tabs button{font-size:11.5px}.entry .cat{display:none}}
 </style>
 </head>
@@ -333,7 +337,7 @@ const DEFAULT={
     supabaseUrl:"",supabaseKey:"",syncCode:""}
 };
 let S=JSON.parse(JSON.stringify(DEFAULT));
-let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, analysisView="finance";
+let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false;
 let syncState={status:"local",error:""};
 
 /* ══════════════ 저장소 (Claude storage → localStorage → Google Drive) ══════════════ */
@@ -580,6 +584,49 @@ function syncStrip(){
   if(configured&&S.meta?.lastSync) return `<div class="sync-strip"><i class="sync-dot ok"></i>동기화됨 · ${savedTime(S.meta.lastSync)}</div>`;
   return `<div class="sync-strip"><i class="sync-dot"></i>이 기기에 저장됨 · ${savedTime(S.meta?.lastLocalSave)}</div>`;
 }
+// 목표는 단계(stage) 순서로 보여주고, 추가·삭제할 때 단계 번호를 다시 매긴다.
+function goalList(){ return [...(S.targets||[])].sort((a,b)=>(a.stage||0)-(b.stage||0)); }
+function renumberGoals(){ S.targets=goalList(); S.targets.forEach((t,i)=>t.stage=i+1); }
+// 예상 대출을 넣으면 집값 전체가 아니라 "집값 − 대출"(내가 모아야 할 돈)을 목표로 본다.
+const goalNeeded=t=>Math.max(0,(t.price||0)-(t.loan||0));
+const fmtYM=m=>{ m=Math.ceil(m); const y=Math.floor(m/12), r=m%12; return y?`${y}년${r?` ${r}개월`:""}`:`${r}개월`; };
+// 월 평균 순자산 증가 속도. 순자산 기록이 3개월 이상 쌓이면 그 추세를, 아니면 최근 3개월 가계부의 (수입 − 지출)을 쓴다.
+function monthlyPace(){
+  const nh=(S.netWorthHistory||[]).slice(-7);
+  if(nh.length>=3){
+    const [y0,m0]=nh[0].ym.split("-").map(Number), [y1,m1]=nh[nh.length-1].ym.split("-").map(Number);
+    const months=(y1-y0)*12+(m1-m0);
+    if(months>0) return {v:(nh[nh.length-1].net-nh[0].net)/months, basis:"순자산 추세"};
+  }
+  const done=recentMonths(4).slice(0,3).map(monthAgg).filter(a=>a.base+a.side+a.expense>0);
+  if(!done.length) return null;
+  return {v:done.reduce((s,a)=>s+a.base+a.side-a.expense,0)/done.length, basis:"최근 가계부 수입−지출"};
+}
+// AI 없이 숫자만으로 이번 달 상태를 점검한다.
+function checkCard(c,pace){
+  const now=today(), m=ym(now), day=+now.slice(8,10), pm=recentMonths(2)[0];
+  const cur=monthAgg(m), prev=monthAgg(pm);
+  const inc=cur.base+cur.side, save=inc-cur.expense, rate=inc?save/inc*100:null;
+  const pinc=prev.base+prev.side, prate=pinc?(pinc-prev.expense)/pinc*100:null;
+  const rows=[];
+  if(inc||cur.expense) rows.push([save>=0?"ok":"bad",`이번 달 남은 돈 <b style="color:${save>=0?"var(--up)":"var(--down)"}">${save>=0?"+":"−"}${won(Math.abs(save))}원</b>${rate!=null?` · 저축률 ${Math.round(rate)}%`:""}${rate!=null&&prate!=null?` <span class="faint">(지난달 ${Math.round(prate)}%)</span>`:""}`]);
+  // 지난달 같은 날짜까지와 비교해 가장 많이 늘어난 지출 범주
+  const spentBy=(from,to)=>{const o={};S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&t.date>=from&&t.date<=to).forEach(t=>o[t.cat]=(o[t.cat]||0)+t.amount);return o;};
+  const lastDay=new Date(+pm.slice(0,4),+pm.slice(5,7),0).getDate();
+  const a=spentBy(m+"-01",now), b=spentBy(pm+"-01",`${pm}-${pad(Math.min(day,lastDay))}`);
+  const diffs=Object.keys({...a,...b}).map(k=>({k,d:(a[k]||0)-(b[k]||0)})).sort((x,y)=>y.d-x.d);
+  if(diffs[0]&&diffs[0].d>=10000) rows.push(["warn",`<b>${esc(diffs[0].k)}</b> 지출이 지난달 같은 기간보다 ${won(diffs[0].d)}원 많아요`]);
+  else if(Object.keys(b).length) rows.push(["ok","지난달 같은 기간보다 크게 늘어난 지출이 없어요"]);
+  const bi=budgetInfo();
+  const warn=bi.rows.filter(r=>r.budget>0&&r.spent>=r.budget*0.8).sort((x,y)=>y.spent/y.budget-x.spent/x.budget).slice(0,2);
+  if(warn.length) rows.push([warn.some(r=>r.spent>r.budget)?"bad":"warn",warn.map(r=>`${esc(r.cat)} 예산 ${Math.round(r.spent/r.budget*100)}% 사용`).join(" · ")]);
+  else if(bi.total) rows.push(["ok","모든 카테고리가 예산 안이에요"]);
+  const repaid=S.tx.filter(t=>t.famRepay&&ym(t.date)===m).reduce((s,t)=>s+t.amount,0);
+  if(repaid) rows.push(["info",`이번 달 부모님 상환 ${won(repaid)}원 · 남은 차입금 ${uk(c.familyDebt)}`]);
+  if(pace) rows.push(["info",`순자산이 한 달에 약 ${won(Math.abs(pace.v))}원씩 ${pace.v>=0?"늘고":"줄고"} 있어요 <span class="faint">(${pace.basis} 기준)</span>`]);
+  if(!rows.length) return `<div class="card"><strong>이번 달 점검</strong><div class="faint" style="margin-top:6px">기록이 쌓이면 저축률, 지출 변화, 예산 상태를 여기서 보여드려요.</div></div>`;
+  return `<div class="card"><strong>이번 달 점검</strong>${rows.map(([k,t])=>`<div class="check-row"><i class="check-dot ${k}"></i><span>${t}</span></div>`).join("")}</div>`;
+}
 function budgetInfo(){
   const cfg=S.budgets||{monthlyTotal:0,categories:{}}, cats=cfg.categories||{};
   const rows=EXP_CATS.map(cat=>({cat,budget:+cats[cat]||0,spent:S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&ym(t.date)===ym(today())&&t.cat===cat).reduce((a,b)=>a+b.amount,0)}));
@@ -740,7 +787,7 @@ function render(){
     ${heroMascot()}
   </div></div>
   <div class="tabs main-tabs" role="tablist">
-    ${["홈","기록","자산","더보기"].map(t=>`<button role="tab" aria-selected="${t===tab||(t==="더보기"&&["상담","리포트","설정"].includes(tab))}" data-tab="${t}">${t}</button>`).join("")}
+    ${["홈","기록","자산","설정"].map(t=>`<button role="tab" aria-selected="${t===tab}" data-tab="${t}">${t}</button>`).join("")}
   </div>`;
   h+=syncStrip();
 
@@ -748,9 +795,6 @@ function render(){
 
   /* ───── 홈 ───── */
   if(tab==="홈"){
-    const stage1=S.targets.find(t=>t.stage===1)||S.targets[0];
-    const rest=S.targets.filter(t=>t!==stage1);
-    const p1=stage1&&stage1.price?c.net/stage1.price*100:0;
     h+=`<div class="quick-grid" style="margin-top:0">
       <button class="quick-btn expense" data-quick="expense"><b>− 지출</b>빠르게 기록하기</button>
       <button class="quick-btn income" data-quick="income"><b>＋ 수입</b>빠르게 기록하기</button>
@@ -781,24 +825,40 @@ function render(){
         <div class="rowline"><span>부모카드 사용 (부)</span><span style="color:var(--amber)">+${won(c.cardAdd)}원</span></div>
         <div class="faint" style="margin-top:4px">무이자. 기록에 "부모님 상환"이라고 적으면 자동으로 줄어듭니다.</div></div>`:""}
     </div>
-
-    <div class="card">
-      <div class="lbl">지금 향하는 목표 — ${esc(stage1?stage1.name:"")}</div>
-      <div class="num" style="font-size:20px;margin-bottom:9px">${uk(stage1?stage1.price:0)} <span style="font-size:12px;color:var(--ink2);font-family:var(--sans)">· ${stage1?stage1.years:0}년 내</span></div>
-      ${bar(p1)}
-      <div class="muted" style="margin-top:7px">${Math.round(p1)}% 도달 · ${won(Math.max(0,(stage1?stage1.price:0)-c.net))}원 남음</div>
-    </div>`;
-    if(rest.length){
-      h+=`<div class="sec">그 다음 목표</div>`;
-      rest.forEach(t=>{
-        const p=t.price?c.net/t.price*100:0;
-        h+=`<div style="margin-bottom:13px">
-          <div class="rowline" style="font-size:12.5px;margin-bottom:5px">
-            <span class="muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.name)}</span>
-            <span class="faint" style="flex:0 0 auto">${uk(t.price)} · ${t.years}년</span></div>
-          ${bar(p,"#9ec5f4")}</div>`;
+`;
+    // 목표는 홈에서 바로 수정한다.
+    const goals=goalList(), pace=monthlyPace();
+    h+=`<div class="card"><div class="rowline" style="margin-bottom:6px"><strong>나의 목표</strong><button class="edit-pill" data-goaledit>${goalEdit?"완료":"수정"}</button></div>`;
+    if(goalEdit){
+      goals.forEach((t,i)=>{
+        h+=`<div style="padding:12px 0;${i?"border-top:1px solid var(--line2)":""}">
+          <div class="rowline" style="gap:8px;margin-bottom:8px"><span class="acct-chip" style="color:var(--accent);background:var(--accent-soft)">${i+1}단계</span><input type="text" data-gname="${t.id}" value="${esc(t.name)}" placeholder="예: 10억대 갈아타기"><button class="del" data-gdel="${t.id}" style="flex:0 0 auto" aria-label="목표 삭제">×</button></div>
+          <div class="grid2" style="margin-bottom:6px">
+            <div><div class="lbl">목표 집값</div><input type="text" class="amt" data-gprice="${t.id}" inputmode="numeric" value="${won(t.price)}"></div>
+            <div><div class="lbl">예상 대출</div><input type="text" class="amt" data-gloan="${t.id}" inputmode="numeric" value="${t.loan?won(t.loan):""}" placeholder="0"></div>
+            <div style="flex:0 0 64px"><div class="lbl">몇 년</div><input type="number" min="1" data-gyears="${t.id}" value="${t.years}"></div>
+          </div>
+          <div class="faint">모아야 할 자기자본 ${won(goalNeeded(t))}원</div>
+        </div>`;
+      });
+      h+=`<div class="btnrow" style="margin-top:8px"><button class="btn ghost tiny" data-gadd>+ 단계 추가</button></div>
+        <div class="faint" style="margin-top:8px">예상 대출을 넣으면 집값 전체가 아니라 <b>집값 − 대출</b>(내가 모아야 할 돈)을 기준으로 진행률을 계산해요.</div>`;
+    }else{
+      if(!goals.length) h+=`<div class="faint" style="padding:6px 0">아직 목표가 없어요. 수정을 눌러 추가해 보세요.</div>`;
+      goals.forEach((t,i)=>{
+        const need=goalNeeded(t), p=need?Math.max(0,c.net)/need*100:100, left=Math.max(0,need-c.net);
+        const eta=left&&pace&&pace.v>0?left/pace.v:null;
+        h+=`<div style="padding:${i?"12px 0 4px":"4px 0 6px"};${i?"border-top:1px solid var(--line2)":""}">
+          ${i===0?`<div class="lbl" style="margin-bottom:3px">지금 향하는 목표</div>`:""}
+          <div class="rowline" style="margin-bottom:6px"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:${i?650:800};font-size:${i?13.5:16}px">${esc(t.name)}</span><span class="faint" style="flex:0 0 auto">${uk(t.price)} · ${t.years}년</span></div>
+          ${bar(p,i?"#9ec5f4":"")}
+          <div class="muted" style="margin-top:6px">${Math.min(100,Math.round(p))}% · ${left?`${won(left)}원 남음`:"자기자본 달성!"}${t.loan?` <span class="faint">(대출 ${uk(t.loan)} 빼고 계산)</span>`:""}</div>
+          ${eta!=null?`<div class="faint" style="margin-top:2px">지금 속도면 약 ${fmtYM(eta)} 뒤 · 목표 ${t.years}년보다 ${eta<=t.years*12?"빠름":"느림"}</div>`:""}
+        </div>`;
       });
     }
+    h+=`</div>`;
+    h+=checkCard(c,pace);
     const bi=budgetInfo();
     if(bi.total){
       const active=bi.rows.filter(r=>r.budget>0).sort((a,b)=>(b.spent/b.budget)-(a.spent/a.budget)).slice(0,3);
@@ -816,17 +876,6 @@ function render(){
     h+=`<div class="grid2" style="margin-top:22px">
       <div class="card"><div class="lbl">이번 달 지출</div><div class="num" style="font-size:19px;color:var(--down)">${won(spent)}</div></div>
       <div class="card"><div class="lbl">이번 달 수입</div><div class="num" style="font-size:19px;color:var(--up)">${won(earned)}</div></div>
-    </div>`;
-    if(isSunday()) h+=`<div class="note info">오늘은 일요일이에요. 더보기 → 분석에서 이번 주 재무 분석을 받아보세요.</div>`;
-    else if(isMonthEnd()) h+=`<div class="note info">월말이 다가왔어요. 더보기 → 분석에서 월간 재무와 시장 브리핑을 확인해 보세요.</div>`;
-  }
-
-  /* ───── 더보기 ───── */
-  if(tab==="더보기"){
-    h+=`<div class="sec" style="margin-top:2px">더보기</div><div class="more-grid">
-      <button class="more-card" data-moretab="상담"><span class="ico">💬</span><strong>재무 상담</strong><span>내 상황에 맞는 질문과 답변</span></button>
-      <button class="more-card" data-moretab="리포트"><span class="ico">📊</span><strong>분석</strong><span>주간·월간 재무와 시장 브리핑</span></button>
-      <button class="more-card" data-moretab="설정"><span class="ico">⚙️</span><strong>설정</strong><span>동기화, AI 연결, 데이터 관리</span></button>
     </div>`;
   }
 
@@ -1030,14 +1079,10 @@ function render(){
     });
     h+=`${assetEdit?`<div class="btnrow"><button class="btn ghost tiny" id="addother">항목 추가</button></div>`:""}
 
-    <div class="sec">목표 아파트</div>`;
-    S.targets.forEach(t=>{
-      h+=assetEdit?`<div class="card">
-        <div class="field"><input type="text" data-tname="${t.id}" value="${esc(t.name)}"></div>
-        <div class="grid2">
-          <div><div class="lbl">목표 금액</div><input type="text" class="amt" data-tprice="${t.id}" inputmode="numeric" value="${won(t.price)}"></div>
-          <div style="flex:0 0 74px"><div class="lbl">목표 년</div><input type="number" data-tyears="${t.id}" value="${t.years}"></div>
-        </div></div>`:`<div class="card"><div class="rowline"><div><strong>${esc(t.name)}</strong><div class="faint" style="margin-top:4px">${t.years}년 목표</div></div><span class="num">${uk(t.price)}</span></div></div>`;
+    <div class="sec">목표 아파트</div>
+    <div class="faint" style="margin-bottom:9px">목표 금액·기간·예상 대출은 홈의 "나의 목표"에서 바꿀 수 있어요.</div>`;
+    goalList().forEach(t=>{
+      h+=`<div class="card"><div class="rowline"><div><strong>${esc(t.name)}</strong><div class="faint" style="margin-top:4px">${t.years}년 목표${t.loan?` · 대출 ${uk(t.loan)} 예상`:""}</div></div><span class="num">${uk(t.price)}</span></div></div>`;
     });
     if(assetEdit) h+=`<button class="btn full" id="recommend" ${busy.rec?"disabled":""}>${spin(busy.rec,busy.rec?"시장 분석 중…":"내 재무상태에 맞는 아파트 추천받기")}</button>`;
     if(window.__rec){
@@ -1058,60 +1103,10 @@ function render(){
     }
   }
 
-  /* ───── 상담 ───── */
-  if(tab==="상담"){
-    h+=`<div class="subpage-head"><button data-tab="더보기" aria-label="뒤로">‹</button><strong>재무 상담</strong></div><div class="faint" style="margin-bottom:14px">여기서 물어본 내용은 분석과 브리핑을 만들 때도 함께 참고돼요.</div>`;
-    if(!S.chat.length){
-      h+=`<div class="faint" style="padding:16px 0">아직 질문이 없어요. 예: "이번 달 무리해서 갈아타기 준비해도 될까요?" / "지금 나스닥 비중을 늘려도 괜찮을까요?"</div>`;
-    }
-    S.chat.forEach(m=>{
-      const mine=m.role==="user";
-      h+=`<div style="display:flex;justify-content:${mine?"flex-end":"flex-start"};margin-bottom:10px">
-        <div style="max-width:82%;background:${mine?"var(--accent)":"var(--surface)"};color:${mine?"#fff":"var(--ink)"};border:${mine?"none":"1px solid var(--line)"};border-radius:14px;padding:10px 13px;font-size:13.5px;line-height:1.7;white-space:pre-wrap">${esc(m.text)}</div>
-      </div>`;
-    });
-    if(busy.chat) h+=`<div class="faint" style="padding:4px 0 10px">생각하는 중…</div>`;
-    h+=`<div style="position:sticky;bottom:8px;background:var(--bg);padding-top:8px">
-      <textarea id="chatin" rows="2" placeholder="재무설계사에게 물어보세요">${esc(window.__chatDraft||"")}</textarea>
-      <div class="btnrow" style="margin-top:8px"><button class="btn full" id="chatsend" ${busy.chat?"disabled":""}>${spin(busy.chat,busy.chat?"생각하는 중…":"물어보기")}</button></div>
-    </div>`;
-  }
-
-  /* ───── 분석 (기존 리포트 통합) ───── */
-  if(tab==="리포트"){
-    const wLast=S.reports.weekly[0], mLast=S.reports.monthly[0], reLast=S.reports.realEstate[0], stLast=S.reports.stocks[0];
-    const cashflow=earned-spent, savingRate=earned?Math.round(cashflow/earned*100):0;
-    h+=`<div class="subpage-head"><button data-tab="더보기" aria-label="뒤로">‹</button><strong>분석</strong></div>
-      <div class="analysis-hero"><div class="lbl">이번 달 현금흐름</div><div class="amount">${cashflow>=0?"+":"−"}${won(Math.abs(cashflow))}원</div><div style="font-size:12px;opacity:.72;margin-top:7px">수입 ${won(earned)}원 · 지출 ${won(spent)}원${earned?` · 저축률 ${savingRate}%`:""}</div></div>
-      <div class="flow-switch" role="tablist" aria-label="분석 종류"><button role="tab" aria-selected="${analysisView==="finance"}" data-analysisview="finance">재무 분석</button><button role="tab" aria-selected="${analysisView==="market"}" data-analysisview="market">시장 브리핑</button></div>`;
-
-    if(analysisView==="finance") h+=`
-      <div class="note info">주간은 일요일 저녁, 월간은 월말에 확인하면 가장 정확해요.</div>
-      <div class="sec" style="margin-top:12px">주간 재무 ${isSunday()?'<span class="chip r">오늘</span>':""}</div>
-      <div class="btnrow"><button class="btn" id="genweek" ${busy.week||!S.tx.length?"disabled":""}>${spin(busy.week,busy.week?"작성 중…":"이번 주 분석 받기")}</button></div>
-      ${wLast?`<div class="card" style="margin-top:11px"><div class="lbl">${fmtDate(wLast.date)}</div><div class="prose">${esc(wLast.text)}</div></div>`:`<div class="faint" style="margin-top:9px">아직 작성된 주간 분석이 없습니다.</div>`}
-      <div class="sec">월간 재무 ${isMonthEnd()?'<span class="chip r">지금</span>':""}</div>
-      <div class="btnrow"><button class="btn" id="genmonth" ${busy.month||!S.tx.length?"disabled":""}>${spin(busy.month,busy.month?"작성 중…":"이번 달 분석 받기")}</button></div>
-      ${hasThisMonth(S.reports.monthly)?`<div class="faint" style="margin-top:7px">이번 달 분석은 이미 받았어요. 다시 누르면 새로 작성됩니다.</div>`:""}
-      ${mLast?`<div class="card" style="margin-top:11px"><div class="lbl">${mLast.ym}</div><div class="prose">${esc(mLast.text)}</div></div>`:`<div class="faint" style="margin-top:9px">아직 작성된 월간 분석이 없습니다.</div>`}`;
-
-    if(analysisView==="market") h+=`
-      <div class="note info">한 달에 한 번, 내 목표와 보유자산에 필요한 시장 변화만 요약합니다.</div>
-      <div class="sec" style="margin-top:12px">부동산</div>
-      <div class="btnrow"><button class="btn" id="genre" ${busy.re?"disabled":""}>${spin(busy.re,busy.re?"뉴스 확인 중…":"이번 달 부동산 브리핑")}</button></div>
-      ${hasThisMonth(S.reports.realEstate)?`<div class="faint" style="margin-top:7px">이번 달 브리핑을 이미 받았어요.</div>`:""}
-      ${reLast?`<div class="card" style="margin-top:11px"><div class="lbl">${reLast.ym}</div><div class="prose">${esc(reLast.text)}</div></div>`:""}
-      <div class="sec">주식 · ETF</div>
-      <div class="btnrow"><button class="btn" id="genst" ${busy.st?"disabled":""}>${spin(busy.st,busy.st?"시장 확인 중…":"이번 달 투자 브리핑")}</button></div>
-      ${hasThisMonth(S.reports.stocks)?`<div class="faint" style="margin-top:7px">이번 달 브리핑을 이미 받았어요.</div>`:""}
-      ${stLast?`<div class="card" style="margin-top:11px"><div class="lbl">${stLast.ym}</div><div class="prose">${esc(stLast.text)}</div></div>`:""}
-      <div class="faint" style="margin-top:16px">투자 조언은 참고용이며 특정 종목 매수·매도를 권유하지 않습니다.</div>`;
-  }
-
   /* ───── 설정 ───── */
   if(tab==="설정"){
     const bi=budgetInfo();
-    h+=`<div class="subpage-head"><button data-tab="더보기" aria-label="뒤로">‹</button><strong>설정</strong></div>
+    h+=`<div class="subpage-head"><strong>설정</strong></div>
     <div class="sec" id="budgetSettings" style="margin-top:2px">월 예산</div>
     <div class="card"><div class="field"><div class="lbl">한 달 전체 예산</div><input type="text" class="amt" id="budgetTotal" inputmode="numeric" value="${S.budgets?.monthlyTotal?won(S.budgets.monthlyTotal):''}" placeholder="예: 2,000,000"></div>
       <div class="faint">전체 예산을 비워두면 아래 카테고리 예산의 합계를 사용합니다.</div>
@@ -1206,27 +1201,14 @@ function render(){
 function bind(){
   const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
   $$("[data-tab]").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;notice="";render()});
-  $$("[data-moretab]").forEach(b=>b.onclick=()=>{tab=b.dataset.moretab;notice="";render()});
   $$("[data-quick]").forEach(b=>b.onclick=()=>{txView=b.dataset.quick;tab="기록";render();setTimeout(()=>document.querySelector("#txin")?.focus(),0)});
   $$("[data-openbudget]").forEach(b=>b.onclick=()=>{tab="설정";render();setTimeout(()=>document.querySelector("#budgetSettings")?.scrollIntoView({behavior:"smooth"}),0)});
   $$("[data-txview]").forEach(b=>b.onclick=()=>{txView=b.dataset.txview;render()});
-  $$("[data-analysisview]").forEach(b=>b.onclick=()=>{analysisView=b.dataset.analysisview;render()});
   $$("[data-acc]").forEach(b=>b.onclick=()=>{openDebt=openDebt===b.dataset.acc?null:b.dataset.acc;render()});
 
   const ta=$("#txin");
   if(ta){ ta.oninput=()=>window.__draft=ta.value; }
 
-  const chatTa=$("#chatin");
-  if(chatTa){
-    chatTa.oninput=()=>window.__chatDraft=chatTa.value;
-    chatTa.onkeydown=(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("#chatsend").click(); } };
-  }
-  if($("#chatsend")) $("#chatsend").onclick=()=>{
-    const q=(window.__chatDraft||"").trim();
-    if(!q||busy.chat) return;
-    window.__chatDraft="";
-    askAdvisor(q);
-  };
 
   if($("#doparse")) $("#doparse").onclick=doParse;
   if($("#cancelpend")) $("#cancelpend").onclick=()=>{pending=[];render()};
@@ -1278,9 +1260,14 @@ function bind(){
   $$("[data-oamt]").forEach(el=>el.onchange=async()=>{const o=S.others.find(x=>x.id===el.dataset.oamt);o.amount=+el.value.replace(/[^\d]/g,"")||0;await commit()});
   $$("[data-delother]").forEach(el=>el.onclick=async()=>{S.others=S.others.filter(o=>o.id!==el.dataset.delother);await commit()});
 
-  $$("[data-tname]").forEach(el=>el.onchange=async()=>{S.targets.find(t=>t.id===el.dataset.tname).name=el.value;await commit()});
-  $$("[data-tprice]").forEach(el=>el.onchange=async()=>{S.targets.find(t=>t.id===el.dataset.tprice).price=+el.value.replace(/[^\d]/g,"")||0;await commit()});
-  $$("[data-tyears]").forEach(el=>el.onchange=async()=>{S.targets.find(t=>t.id===el.dataset.tyears).years=+el.value||0;await commit()});
+  const goalOf=id=>S.targets.find(t=>t.id===id);
+  $$("[data-goaledit]").forEach(b=>b.onclick=()=>{goalEdit=!goalEdit;render()});
+  $$("[data-gname]").forEach(el=>el.onchange=async()=>{goalOf(el.dataset.gname).name=el.value;await commit()});
+  $$("[data-gprice]").forEach(el=>el.onchange=async()=>{goalOf(el.dataset.gprice).price=+el.value.replace(/[^\d]/g,"")||0;await commit()});
+  $$("[data-gloan]").forEach(el=>el.onchange=async()=>{goalOf(el.dataset.gloan).loan=+el.value.replace(/[^\d]/g,"")||0;await commit()});
+  $$("[data-gyears]").forEach(el=>el.onchange=async()=>{goalOf(el.dataset.gyears).years=Math.max(1,+el.value||1);await commit()});
+  $$("[data-gdel]").forEach(el=>el.onclick=async()=>{if(!confirm("이 목표를 삭제할까요?"))return;S.targets=S.targets.filter(t=>t.id!==el.dataset.gdel);renumberGoals();await commit()});
+  $$("[data-gadd]").forEach(el=>el.onclick=async()=>{renumberGoals();S.targets.push({id:uid(),stage:S.targets.length+1,name:"새 목표",price:1000000000,loan:0,years:5});await commit()});
   if($("#recommend")) $("#recommend").onclick=recommend;
   $$("[data-apply]").forEach(el=>el.onclick=async()=>{
     const st=+el.dataset.apply, it=window.__rec.items[+el.dataset.idx];
@@ -1288,10 +1275,6 @@ function bind(){
     if(t){ t.name=st+"단계 — "+it.name; t.price=Math.round(it.price); await commit(); }
   });
 
-  if($("#genweek")) $("#genweek").onclick=()=>genFinance("week");
-  if($("#genmonth")) $("#genmonth").onclick=()=>genFinance("month");
-  if($("#genre")) $("#genre").onclick=genRealEstate;
-  if($("#genst")) $("#genst").onclick=genStocks;
 
   $$("[data-prof]").forEach(el=>el.onchange=async()=>{S.profile[el.dataset.prof]=el.value;await commit()});
   $$("[data-set]").forEach(el=>{
@@ -1386,91 +1369,6 @@ function ctx(){
 목표: ${S.targets.map(t=>`${t.name} ${uk(t.price)} (${t.years}년 내)`).join(" / ")}
 ${recentQs.length?`[고객이 상담 탭에서 최근 물어본 것들 — 리포트에서 관련 있으면 참고해라] ${recentQs.map(q=>`"${q}"`).join(" / ")}`:""}
 [반드시 지킬 것] ${S.profile.coachNote}`;
-}
-
-async function askAdvisor(question){
-  const id1=uid();
-  S.chat.push({id:id1,role:"user",text:question,date:today()});
-  S.chat=S.chat.slice(-60);
-  busy.chat=true; notice=""; render();
-  const history=S.chat.slice(-9,-1).map(m=>`${m.role==="user"?"고객":"재무설계사"}: ${m.text}`).join("\n");
-  const p=`너는 대한민국 최고의 재무설계사다. 신중하고 직설적으로, 그러나 따뜻하게 상담해라. 확정적 예측은 피하고 근거를 들어 설명해라. 필요하면 웹 검색으로 최신 정보를 확인해라.
-${ctx()}
-${history?`[지금까지의 대화]\n${history}\n`:""}
-[고객의 질문] ${question}
-
-3~6문장으로 답해라. 고객의 코칭 가치관을 지켜라. 마크다운·목록 기호 없이 대화체 문장으로만.`;
-  try{
-    const text=await ai(p,true);
-    S.chat.push({id:uid(),role:"assistant",text,date:today()});
-  }catch(e){
-    S.chat.push({id:uid(),role:"assistant",text:"["+aiErr(e,"답변 생성")+"]",date:today()});
-  }
-  busy.chat=false;
-  await saveLocal(S); if(sbReady()) sbSave().catch(()=>{});
-  render();
-}
-
-async function genFinance(kind){
-  busy[kind]=true; notice=""; render();
-  const from=kind==="week"?daysAgo(7):monthStart();
-  const rows=catRows(from);
-  const range=S.tx.filter(t=>t.date>=from);
-  const inc=range.filter(t=>t.type==="income").reduce((a,b)=>a+b.amount,0);
-  const exp=rows.reduce((a,b)=>a+b.sum,0);
-  const p=`너는 신중하고 직설적인 한국의 재무설계사다. 아래 고객의 ${kind==="week"?"지난 일주일":"이번 달"} 재무 리포트를 한국어로 써라.
-${ctx()}
-[기간 데이터] 지출 ${won(exp)}원, 수입 ${won(inc)}원 (본봉 ${won(range.filter(t=>t.type==="income"&&!t.sideIncome).reduce((a,b)=>a+b.amount,0))}원, 부수입 ${won(range.filter(t=>t.type==="income"&&t.sideIncome).reduce((a,b)=>a+b.amount,0))}원)
-카테고리별 지출: ${JSON.stringify(rows)}
-전체 기록: ${JSON.stringify(range.slice(0,120))}
-
-${kind==="week"
-? `주간 리포트다. 문단 3개로 상세히 써라. ①이번 주 소비 흐름과 눈에 띈 지점 ②저축·상환 여력 평가 ③다음 주에 구체적으로 시도해볼 것 한두 가지.`
-: `월간 리포트다. 주간보다 훨씬 구체적으로, 문단 4개로 써라. ①이번 달 수입·지출 총평과 저축률 ②카테고리별 분석과 지난 달 대비 눈에 띄는 변화 ③은행·부모님 부채 상환 진행 상황과 순자산 변화 ④다음 달 실행 계획을 숫자와 함께 구체적으로.`}
-마크다운·제목·목록 기호 없이 문단으로만 써라.`;
-  try{
-    const text=await ai(p,false);
-    if(kind==="week") S.reports.weekly=[{date:today(),text},...S.reports.weekly].slice(0,8);
-    else S.reports.monthly=[{ym:ym(today()),text},...S.reports.monthly.filter(r=>r.ym!==ym(today()))].slice(0,12);
-    await saveLocal(S); if(sbReady()) sbSave().catch(()=>{});
-  }catch(e){ notice=aiErr(e,"리포트 생성"); }
-  busy[kind]=false; render();
-}
-
-async function genRealEstate(){
-  busy.re=true; notice=""; render();
-  const p=`너는 한국 부동산과 재무설계에 밝은 전문가다. 웹 검색으로 최근 한 달간의 한국 부동산 뉴스(정책, 금리, 공급, 강서·마곡·목동·상암 등 관련 지역 동향)를 확인하고 고객용 월간 브리핑을 한국어로 써라.
-${ctx()}
-문단 3개로 써라. ①이번 달 부동산 시장에서 실제로 있었던 일 요약(구체적 사실 위주) ②그것이 이 고객의 갈아타기 계획(1단계·2단계)에 주는 의미 ③지금 시점에 목표를 향해 할 수 있는 구체적 행동 한두 가지.
-확정적 예측은 피하고 근거를 제시해라. 출처 URL을 나열하지 말고 문장에 자연스럽게 녹여라. 마크다운·제목 없이 문단으로만.`;
-  try{
-    const text=await ai(p,true);
-    S.reports.realEstate=[{ym:ym(today()),text},...S.reports.realEstate.filter(r=>r.ym!==ym(today()))].slice(0,12);
-    await saveLocal(S); if(sbReady()) sbSave().catch(()=>{});
-  }catch(e){ notice=aiErr(e,"부동산 브리핑 생성"); }
-  busy.re=false; render();
-}
-
-async function genStocks(){
-  busy.st=true; notice=""; render();
-  const near=S.targets[0];
-  const p=`너는 공격적 투자 성향 고객을 담당하는 한국의 재무설계사다. 웹 검색으로 최근 한 달간의 시장 동향(나스닥, 반도체 섹터, 환율, 금리)을 확인하고 월간 투자 브리핑을 한국어로 써라.
-${ctx()}
-보유(계좌별): ${ACCOUNTS.map(a=>{
-  const l=S.stocks.filter(x=>(x.account||"일반")===a);
-  if(!l.length) return null;
-  return `[${a}계좌] `+l.map(x=>`${x.name} ${x.qty}주 (매수 ${won(x.buyPrice)}, 현재 ${x.currentPrice!=null?won(x.currentPrice):"미확인"}, 평가액 ${won((x.currentPrice!=null?x.currentPrice:x.buyPrice)*x.qty)}원)`).join(", ");
-}).filter(Boolean).join(" / ")||"없음"}
-[계좌별 세제 고려사항] ISA계좌는 의무가입 3년, 서민형 기준 순이익 비과세 한도가 있고 초과분은 분리과세됩니다. 연금계좌(연금저축+IRP)는 연간 납입한도와 세액공제 한도가 있고 중도인출 시 기타소득세가 부과됩니다. 일반계좌는 국내주식 양도세 비과세(대주주 제외)이나 배당소득세와 금융소득종합과세 대상입니다. 조언할 때 어떤 계좌에 무엇을 담는 것이 세제상 유리한지도 함께 짚어라. 단, 구체적인 한도 금액은 해마다 바뀌므로 웹 검색으로 현재 기준을 확인하고 말해라.
-가장 가까운 목돈 필요 시점: ${near?near.name+", 약 "+near.years+"년 후":"특정 없음"}
-문단 3개로 써라. ①이번 달 시장에서 실제로 있었던 일 요약 ②이 고객 기준으로 비중을 늘릴지 줄일지와 그 이유, 어떤 성격의 자산에 집중할지 ③목돈 필요 시점을 고려한 리밸런싱 방향.
-특정 종목을 단정적으로 추천하지 말고 자산의 성격·카테고리로 말해라. 손실 가능성을 분명히 언급해라. 마크다운·제목 없이 문단으로만.`;
-  try{
-    const text=await ai(p,true);
-    S.reports.stocks=[{ym:ym(today()),text},...S.reports.stocks.filter(r=>r.ym!==ym(today()))].slice(0,12);
-    await saveLocal(S); if(sbReady()) sbSave().catch(()=>{});
-  }catch(e){ notice=aiErr(e,"투자 브리핑 생성"); }
-  busy.st=false; render();
 }
 
 async function refreshPrice(){
