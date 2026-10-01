@@ -617,22 +617,24 @@ function checkCard(c,pace){
   const diffs=Object.keys({...a,...b}).map(k=>({k,d:(a[k]||0)-(b[k]||0)})).sort((x,y)=>y.d-x.d);
   if(diffs[0]&&diffs[0].d>=10000) rows.push(["warn",`<b>${esc(diffs[0].k)}</b> 지출이 지난달 같은 기간보다 ${won(diffs[0].d)}원 많아요`]);
   else if(Object.keys(b).length) rows.push(["ok","지난달 같은 기간보다 크게 늘어난 지출이 없어요"]);
+  // 생활비는 한 달 총액 하나만 본다. 달이 지난 비율보다 많이 썼으면 경고.
   const bi=budgetInfo();
-  const warn=bi.rows.filter(r=>r.budget>0&&r.spent>=r.budget*0.8).sort((x,y)=>y.spent/y.budget-x.spent/x.budget).slice(0,2);
-  if(warn.length) rows.push([warn.some(r=>r.spent>r.budget)?"bad":"warn",warn.map(r=>`${esc(r.cat)} 예산 ${Math.round(r.spent/r.budget*100)}% 사용`).join(" · ")]);
-  else if(bi.total) rows.push(["ok","모든 카테고리가 예산 안이에요"]);
+  if(bi.total){
+    const daysIn=new Date(+m.slice(0,4),+m.slice(5,7),0).getDate(), timePct=day/daysIn*100;
+    const k=bi.pct>100?"bad":bi.pct>timePct+10?"warn":"ok";
+    rows.push([k,`생활비 ${Math.round(bi.pct)}% 사용 <span class="faint">(이번 달 ${Math.round(timePct)}% 지남)</span>${k==="ok"?" · 속도 괜찮아요":k==="warn"?" · 조금 빨라요":" · 예산 초과"}`]);
+  }
   const repaid=S.tx.filter(t=>t.famRepay&&ym(t.date)===m).reduce((s,t)=>s+t.amount,0);
   if(repaid) rows.push(["info",`이번 달 부모님 상환 ${won(repaid)}원 · 남은 차입금 ${uk(c.familyDebt)}`]);
   if(pace) rows.push(["info",`순자산이 한 달에 약 ${won(Math.abs(pace.v))}원씩 ${pace.v>=0?"늘고":"줄고"} 있어요 <span class="faint">(${pace.basis} 기준)</span>`]);
   if(!rows.length) return `<div class="card"><strong>이번 달 점검</strong><div class="faint" style="margin-top:6px">기록이 쌓이면 저축률, 지출 변화, 예산 상태를 여기서 보여드려요.</div></div>`;
   return `<div class="card"><strong>이번 달 점검</strong>${rows.map(([k,t])=>`<div class="check-row"><i class="check-dot ${k}"></i><span>${t}</span></div>`).join("")}</div>`;
 }
+// 한 달 생활비(총액)만 쓴다. 예전에 넣어둔 카테고리별 예산은 무시한다.
 function budgetInfo(){
-  const cfg=S.budgets||{monthlyTotal:0,categories:{}}, cats=cfg.categories||{};
-  const rows=EXP_CATS.map(cat=>({cat,budget:+cats[cat]||0,spent:S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&ym(t.date)===ym(today())&&t.cat===cat).reduce((a,b)=>a+b.amount,0)}));
-  const catTotal=rows.reduce((a,b)=>a+b.budget,0), total=+cfg.monthlyTotal||catTotal;
-  const spent=rows.reduce((a,b)=>a+b.spent,0);
-  return {rows,total,spent,remaining:total-spent,pct:total?spent/total*100:0};
+  const total=+(S.budgets&&S.budgets.monthlyTotal)||0;
+  const spent=S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&ym(t.date)===ym(today())).reduce((a,b)=>a+b.amount,0);
+  return {total,spent,remaining:total-spent,pct:total?spent/total*100:0};
 }
 function catRows(from){
   const m={};
@@ -861,14 +863,12 @@ function render(){
     h+=checkCard(c,pace);
     const bi=budgetInfo();
     if(bi.total){
-      const active=bi.rows.filter(r=>r.budget>0).sort((a,b)=>(b.spent/b.budget)-(a.spent/a.budget)).slice(0,3);
-      h+=`<div class="budget-card"><div class="budget-top"><div><div class="lbl">이번 달 남은 예산</div><div class="budget-remaining" style="color:${bi.remaining<0?'var(--down)':'var(--ink)'}">${bi.remaining<0?'초과 ':''}${won(Math.abs(bi.remaining))}원</div></div><div class="muted">${Math.round(bi.pct)}% 사용</div></div>
+      h+=`<div class="budget-card"><div class="budget-top"><div><div class="lbl">이번 달 남은 생활비</div><div class="budget-remaining" style="color:${bi.remaining<0?'var(--down)':'var(--ink)'}">${bi.remaining<0?'초과 ':''}${won(Math.abs(bi.remaining))}원</div></div><div class="muted">${Math.round(bi.pct)}% 사용</div></div>
         <div class="bar"><i style="width:${Math.min(100,bi.pct)}%;background:${bi.pct>100?'var(--down)':bi.pct>80?'var(--amber)':'var(--accent)'}"></i></div>
-        <div class="rowline faint" style="margin-top:7px"><span>사용 ${won(bi.spent)}원</span><span>예산 ${won(bi.total)}원</span></div>
-        ${active.map(r=>`<div class="budget-row"><div class="rowline"><span>${esc(r.cat)}</span><span style="color:${r.spent>r.budget?'var(--down)':'var(--ink2)'}">${won(r.spent)} / ${won(r.budget)}</span></div><div class="bar"><i style="width:${Math.min(100,r.spent/r.budget*100)}%;background:${r.spent>r.budget?'var(--down)':CAT_COLOR[r.cat]||'var(--accent)'}"></i></div></div>`).join("")}
+        <div class="rowline faint" style="margin-top:7px"><span>사용 ${won(bi.spent)}원</span><span>한 달 생활비 ${won(bi.total)}원</span></div>
       </div>`;
     }else{
-      h+=`<div class="budget-card"><div class="rowline"><div><strong>월 예산을 정해보세요</strong><div class="faint" style="margin-top:5px">남은 생활비를 홈에서 바로 확인할 수 있어요.</div></div><button class="edit-pill" data-openbudget>설정</button></div></div>`;
+      h+=`<div class="budget-card"><div class="rowline"><div><strong>한 달 생활비를 정해보세요</strong><div class="faint" style="margin-top:5px">남은 생활비를 홈에서 바로 확인할 수 있어요.</div></div><button class="edit-pill" data-openbudget>설정</button></div></div>`;
     }
     const nh=(S.netWorthHistory||[]).slice(-12);
     h+=`<div class="trend-card"><div class="rowline"><div><strong>순자산 변화</strong><div class="faint" style="margin-top:4px">매월 자동으로 기록됩니다.</div></div><span class="num" style="color:${nh.length>1&&nh[nh.length-1].net>=nh[nh.length-2].net?'var(--up)':'var(--ink2)'}">${nh.length>1?`${nh[nh.length-1].net>=nh[nh.length-2].net?'+':'−'}${won(Math.abs(nh[nh.length-1].net-nh[nh.length-2].net))}원`:"첫 기록"}</span></div>
@@ -973,7 +973,7 @@ function render(){
     <div class="card" style="margin-bottom:14px">
       <div class="lbl">제안된 시세 — 확인 후 적용하세요</div>
       ${window.__priceReview.map((r,i)=>{
-        const pct = r.oldPrice? ((r.edited-r.oldPrice)/r.oldPrice*100) : null;
+        const pct = r.oldPrice&&r.edited>0? ((r.edited-r.oldPrice)/r.oldPrice*100) : null;
         return `<div style="padding:9px 0;border-top:1px solid var(--line2)">
           <div class="rowline" style="font-size:13.5px;margin-bottom:4px">
             <span style="font-weight:600">${esc(r.name)}</span>
@@ -982,7 +982,7 @@ function render(){
             </label>
           </div>
           <div class="rowline" style="font-size:12.5px;color:var(--ink2);margin-bottom:4px">
-            <span>이전 ${r.oldPrice?won(r.oldPrice)+"원":"없음"}${!r.confident?' <span style="color:var(--amber)">· AI 확신 낮음</span>':""}${r.basisDate?" · "+fmtDate(r.basisDate)+" 기준":""}</span>
+            <span>이전 ${r.oldPrice?won(r.oldPrice)+"원":"없음"}${r.proposed==null?' <span style="color:var(--down)">· 찾지 못함</span>':!r.confident?' <span style="color:var(--amber)">· AI 확신 낮음</span>':""}${r.basisDate?" · "+fmtDate(r.basisDate)+" 기준":""}</span>
             <span>${pct!=null?`<b style="color:${pct>=0?'var(--up)':'var(--down)'}">${pct>=0?"+":""}${pct.toFixed(1)}%</b>`:""}</span>
           </div>
           <input type="text" class="amt" data-rvedit="${i}" inputmode="numeric" value="${r.edited?won(r.edited):""}" placeholder="가격 직접 입력/수정">
@@ -1022,8 +1022,11 @@ function render(){
             <div><div class="lbl">매수가</div><input type="text" class="amt" data-sbuy="${st.id}" inputmode="numeric" value="${won(st.buyPrice)}"></div>
             <div style="flex:0 0 62px"><div class="lbl">개수</div><input type="text" class="amt" data-sqty="${st.id}" inputmode="numeric" value="${st.qty}"></div>
           </div>
-          ${stockAcctTab==="전체"?`<div class="field"><div class="lbl">계좌</div>
-            <select data-sacct="${st.id}">${ACCOUNTS.map(a=>`<option${a===(st.account||"일반")?" selected":""}>${a}</option>`).join("")}</select></div>`:""}`:`<div class="faint" style="margin-bottom:8px">${st.qty}주 · 평균 ${won(st.buyPrice)}원${st.code?" · "+esc(st.code):""}</div>`}
+          <div class="grid2" style="margin-bottom:6px">
+            <div><div class="lbl">현재가 (직접 입력)</div><input type="text" class="amt" data-scur="${st.id}" inputmode="numeric" value="${st.currentPrice!=null?won(st.currentPrice):""}" placeholder="자동 갱신 안 될 때"></div>
+            ${stockAcctTab==="전체"?`<div style="flex:0 0 110px"><div class="lbl">계좌</div>
+            <select data-sacct="${st.id}">${ACCOUNTS.map(a=>`<option${a===(st.account||"일반")?" selected":""}>${a}</option>`).join("")}</select></div>`:""}
+          </div>`:`<div class="faint" style="margin-bottom:8px">${st.qty}주 · 평균 ${won(st.buyPrice)}원${st.code?" · "+esc(st.code):""}</div>`}
           <div class="rowline" style="font-size:12.5px;padding-top:7px;border-top:1px solid var(--line2)">
             <span class="muted">현재가${st.priceDate?" ("+fmtDate(st.priceDate)+")":""}</span>
             <span>${hasCur?won(cur)+"원":`<span class="faint">${st.err==="코드없음"?"종목코드 입력 필요":"다음 자동 갱신 때 반영"}</span>`}${pct!=null?` <small style="color:${pctColor};font-weight:600">${pct>=0?"+":""}${pct.toFixed(1)}%</small>`:""}</span>
@@ -1056,12 +1059,14 @@ function render(){
       <div class="faint" style="margin-top:8px">종목코드는 네이버 금융에서 검색하면 이름 옆에 나오는 6자리예요 (숫자+영문 모두 가능). 예: TIGER 미국나스닥100 → 133690</div>
     </div>`;
 
-    h+=`<details class="estate-fold">
+    // 부동산 시세는 "자산 수정"을 누르지 않아도 바로 고칠 수 있게 항상 입력칸을 보여준다.
+    h+=`<details class="estate-fold" open>
       <summary><span>🏠 부동산</span><span class="weekmeta">${won(c.re)}원</span></summary>
       <div class="estate-body">
-        ${assetEdit?`<div class="field" style="margin-top:14px"><div class="lbl">현재 시세</div><input type="text" class="amt" id="reprice" inputmode="numeric" value="${won(c.re)}"></div>
-        <div class="field"><div class="lbl">단지명 / 평형</div><input type="text" id="rename" value="${esc(S.realEstate.name)}"></div>
-        <div class="btnrow"><button class="btn ghost" id="refreshprice" ${busy.price?"disabled":""}>${spin(busy.price,busy.price?"조회 중…":"네이버페이 실거래가로 갱신")}</button></div>`:`<div style="padding-top:14px;font-weight:700">${esc(S.realEstate.name)}</div>`}
+        <div style="padding-top:14px;font-weight:700">${esc(S.realEstate.name)}</div>
+        <div class="field" style="margin-top:10px"><div class="lbl">현재 시세 (직접 입력)</div><input type="text" class="amt" id="reprice" inputmode="numeric" value="${won(c.re)}"></div>
+        ${assetEdit?`<div class="field"><div class="lbl">단지명 / 평형</div><input type="text" id="rename" value="${esc(S.realEstate.name)}"></div>`:""}
+        <div class="btnrow"><button class="btn ghost tiny" id="refreshprice" ${busy.price?"disabled":""}>${spin(busy.price,busy.price?"조회 중…":"AI로 실거래가 확인")}</button></div>
         ${S.realEstate.basis?`<div class="faint" style="margin-top:9px">${esc(S.realEstate.basis)}</div>`:""}
         <div class="rowline" style="margin-top:13px;padding-top:11px;border-top:1px solid var(--line2);font-size:13px">
           <span class="muted">자기자본 (시세 − 은행부채)</span><span>${won(c.re-c.bankDebt)}원</span></div>
@@ -1105,14 +1110,10 @@ function render(){
 
   /* ───── 설정 ───── */
   if(tab==="설정"){
-    const bi=budgetInfo();
     h+=`<div class="subpage-head"><strong>설정</strong></div>
-    <div class="sec" id="budgetSettings" style="margin-top:2px">월 예산</div>
-    <div class="card"><div class="field"><div class="lbl">한 달 전체 예산</div><input type="text" class="amt" id="budgetTotal" inputmode="numeric" value="${S.budgets?.monthlyTotal?won(S.budgets.monthlyTotal):''}" placeholder="예: 2,000,000"></div>
-      <div class="faint">전체 예산을 비워두면 아래 카테고리 예산의 합계를 사용합니다.</div>
-      <details class="weekgroup" style="box-shadow:none;border:1px solid var(--line);margin-top:13px"><summary><span>카테고리별 예산</span><span class="weekmeta">${won(bi.rows.reduce((a,b)=>a+b.budget,0))}원</span></summary><div class="weekbody"><div class="budget-grid">
-        ${bi.rows.map(r=>`<label class="budget-input"><span class="lbl">${esc(r.cat)}</span><input type="text" inputmode="numeric" data-budget-cat="${esc(r.cat)}" value="${r.budget?won(r.budget):''}" placeholder="0"></label>`).join("")}
-      </div></div></details></div>
+    <div class="sec" id="budgetSettings" style="margin-top:2px">한 달 생활비</div>
+    <div class="card"><div class="field"><div class="lbl">한 달에 쓸 생활비</div><input type="text" class="amt" id="budgetTotal" inputmode="numeric" value="${S.budgets?.monthlyTotal?won(S.budgets.monthlyTotal):''}" placeholder="예: 2,000,000"></div>
+      <div class="faint">부모님 상환은 빼고, 이번 달 지출 전체를 이 금액과 비교해요.</div></div>
     <div class="faint" style="margin:6px 2px 17px">아래 내용은 분석과 조언을 만들 때 항상 함께 전달됩니다. 언제든 고치면 다음 조언부터 반영돼요.</div>
     <div class="card"><div class="lbl">코칭 참고사항 — 조언할 때 지켜야 할 것</div>
       <textarea rows="4" data-prof="coachNote">${esc(S.profile.coachNote)}</textarea></div>
@@ -1222,7 +1223,7 @@ function bind(){
   $$("[data-ptog]").forEach(el=>el.onclick=()=>{const i=+el.dataset.ptog;pending[i].parentCard=!pending[i].parentCard;render()});
   $$("[data-del]").forEach(el=>el.onclick=async()=>{S.tx=S.tx.filter(t=>t.id!==el.dataset.del);await commit()});
 
-  if($("#reprice")) $("#reprice").onchange=async e=>{S.realEstate.currentPrice=+e.target.value.replace(/[^\d]/g,"")||0;await commit()};
+  if($("#reprice")) $("#reprice").onchange=async e=>{S.realEstate.currentPrice=+e.target.value.replace(/[^\d]/g,"")||0;S.realEstate.basis=`직접 입력 (${today()})`;await commit()};
   if($("#rename")) $("#rename").onchange=async e=>{S.realEstate.name=e.target.value;await commit()};
   if($("#refreshprice")) $("#refreshprice").onclick=refreshPrice;
   if($("#toggleAssetEdit")) $("#toggleAssetEdit").onclick=()=>{assetEdit=!assetEdit;render()};
@@ -1248,6 +1249,10 @@ function bind(){
   $$("[data-scode]").forEach(el=>el.onchange=async()=>{const s=S.stocks.find(x=>x.id===el.dataset.scode);s.code=normCode(el.value);await commit()});
   $$("[data-sbuy]").forEach(el=>el.onchange=async()=>{const s=S.stocks.find(x=>x.id===el.dataset.sbuy);s.buyPrice=+el.value.replace(/[^\d]/g,"")||0;await commit()});
   $$("[data-sqty]").forEach(el=>el.onchange=async()=>{const s=S.stocks.find(x=>x.id===el.dataset.sqty);s.qty=+el.value.replace(/[^\d]/g,"")||0;await commit()});
+  $$("[data-scur]").forEach(el=>el.onchange=async()=>{
+    const s=S.stocks.find(x=>x.id===el.dataset.scur), v=+el.value.replace(/[^\d]/g,"")||0;
+    s.currentPrice=v||null; s.priceDate=v?today():null; s.err=null; await commit();
+  });
   $$("[data-sacct]").forEach(el=>el.onchange=async()=>{const s=S.stocks.find(x=>x.id===el.dataset.sacct);s.account=el.value;await commit()});
   if($("#fetchprices")) $("#fetchprices").onclick=fetchPriceProposals;
   if($("#applyreview")) $("#applyreview").onclick=applyPriceReview;
@@ -1404,27 +1409,40 @@ function aiConfigured(){
 /* 시세 조회: AI 웹검색으로 후보값을 받아온 뒤, 바로 반영하지 않고
    "제안 → 확인 → 적용" 단계를 거친다. 종목마다 이전가와 나란히 보여줘서
    이상한 값(오독·오검색)은 사람이 바로 걸러낼 수 있게 한다. */
+// 시세처럼 웹 검색이 꼭 필요한 요청은, 게이트웨이(FactChat)를 쓰고 있어도 Gemini로 보낸다.
+async function aiWithSearch(prompt){
+  const prev=S.settings.provider; S.settings.provider="gemini";
+  try{ return await ai(prompt,true); } finally{ S.settings.provider=prev; }
+}
 async function fetchPriceProposals(){
   if(!S.stocks.length) return;
-  const needed=S.stocks.filter(x=>x.priceDate!==today());
-  if(!needed.length){ notice="이미 오늘자 시세로 갱신되어 있어요."; return render(); }
-  if(!aiConfigured()){ notice="설정 탭에서 AI 키를 먼저 입력해 주세요."; return render(); }
+  // 자동 갱신(매일 오후 4시 반)으로 최근 종가가 들어와 있는 종목은 건너뛴다.
+  const stale=s=>s.currentPrice==null||s.err==="조회실패"||!s.priceDate||(Date.now()-new Date(s.priceDate).getTime())/86400000>4;
+  const groups={};
+  S.stocks.filter(stale).forEach(s=>{const k=normCode(s.code)||s.name;(groups[k]=groups[k]||[]).push(s);});
+  const needed=Object.values(groups);
+  if(!needed.length){
+    const latest=S.stocks.map(s=>s.priceDate).filter(Boolean).sort().pop();
+    notice=`모든 종목이 최근 종가${latest?`(${fmtDate(latest)})`:""}로 자동 갱신돼 있어요. 따로 확인할 필요 없어요.`;
+    return render();
+  }
+  if(!(S.settings.apiKey||"").trim()){ notice="시세 확인은 웹 검색이 되는 Gemini 키가 필요해요. 설정 → Google AI Studio API 키를 넣거나, 자산 수정에서 현재가를 직접 입력해 주세요."; return render(); }
 
   busy.stocks=true; notice=""; window.__priceReview=null; render();
   try{
-    const raw=await ai(`너는 국내외 증시 데이터에 정확한 전문가다. 웹 검색으로 아래 종목들의 "가장 최근 거래일(전날 또는 그 이전 마지막 거래일) 종가"를 조사해라.
-- 반드시 실제로 검색해서 찾은 값만 답하고, 추측하지 마라.
+    const raw=await aiWithSearch(`너는 국내외 증시 데이터에 정확한 전문가다. 웹 검색으로 아래 종목들의 "가장 최근 거래일(전날 또는 그 이전 마지막 거래일) 종가"를 조사해라.
+- 반드시 실제로 검색해서 찾은 값만 답하고, 추측하지 마라. 못 찾으면 price를 null로 둬라.
 - 확신이 없으면 confident를 false로 표시해라.
 - 해외 종목은 최근 환율로 원화 환산한 값을 price에 넣어라.
-종목 목록: ${needed.map((x,i)=>`${i+1}) ${x.name}${normCode(x.code)?" ("+normCode(x.code)+")":""}`).join(", ")}
+종목 목록: ${needed.map((g,i)=>`${i+1}) ${g[0].name}${normCode(g[0].code)?" ("+normCode(g[0].code)+")":""}`).join(", ")}
 JSON 배열만 출력해라(설명·마크다운 없이). idx는 위 번호와 같게 해라:
-[{"idx":1,"price":정수(1주당 원),"basisDate":"YYYY-MM-DD(종가 기준일)","confident":true|false}]`,true);
+[{"idx":1,"price":정수(1주당 원)|null,"basisDate":"YYYY-MM-DD(종가 기준일)","confident":true|false}]`);
     const arr=JSON.parse(stripJson(raw));
-    window.__priceReview = needed.map((x,i)=>{
-      const hit=arr.find(o=>Number(o.idx)===i+1)||arr[i]||{};
+    window.__priceReview = needed.map((g,i)=>{
+      const hit=arr.find(o=>Number(o.idx)===i+1)||{};
       const proposed = hit.price>0 ? Math.round(hit.price) : null;
       return {
-        id:x.id, name:x.name, oldPrice: x.currentPrice, buyPrice:x.buyPrice,
+        ids:g.map(s=>s.id), name:g[0].name+(g.length>1?` (${g.length}개 계좌)`:""), oldPrice:g[0].currentPrice,
         proposed, basisDate: hit.basisDate||null, confident: hit.confident!==false,
         include: proposed!=null, edited: proposed
       };
@@ -1440,17 +1458,18 @@ function applyPriceReview(){
     if(!r.include) return;
     const v=Number(r.edited);
     if(!(v>0)) return;
-    const st=S.stocks.find(s=>s.id===r.id);
-    if(!st) return;
-    st.currentPrice=Math.round(v);
-    st.priceDate=r.basisDate||today();
-    st.err=null;
-    applied++;
+    (r.ids||[]).forEach(id=>{
+      const st=S.stocks.find(s=>s.id===id);
+      if(!st) return;
+      st.currentPrice=Math.round(v);
+      st.priceDate=r.basisDate||today();
+      st.err=null;
+      applied++;
+    });
   });
   window.__priceReview=null;
   notice = applied ? `${applied}개 종목에 반영했습니다.` : "선택된 항목이 없어 반영하지 않았습니다.";
-  saveLocal(S); if(sbReady()) sbSave().catch(()=>{});
-  render();
+  commit();
 }
 
 async function recommend(){

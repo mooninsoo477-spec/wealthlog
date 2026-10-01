@@ -133,6 +133,8 @@ async function main() {
     try {
       const result = await fetchLatestPrice(st.code);
       if (!result) {
+        // 코드 오타나 Yahoo 미지원 종목. 앱 카드에 "조회 실패" 안내가 뜨도록 표시해 둔다.
+        st.err = "조회실패";
         failed.push(`${st.name || st.code}(데이터 없음)`);
         continue;
       }
