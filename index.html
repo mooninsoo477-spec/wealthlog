@@ -284,6 +284,7 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 :root[data-theme="dark"] .health-badge.ok{background:#123326;color:#5FD3A1}
 :root[data-theme="dark"] .health-badge.warn{background:#3A2F17;color:#F5C76B}
 :root[data-theme="dark"] .health-badge.bad{background:#3D1F1F;color:#F2A3A3}
+.search-box{margin:16px 0 4px}.search-box input{width:100%}
 @media(max-width:380px){.hero-copy{max-width:78%}.mascot{width:88px;height:88px;right:8px}.tabs button{font-size:11.5px}.entry .cat{display:none}}
 </style>
 </head>
@@ -380,6 +381,9 @@ const DEFAULT={
            {id:uid(),stage:2,name:"2단계 — 목동",price:3000000000,years:10}],
   budgets:{monthlyTotal:0,categories:{}},
   contribs:[],
+  invest:{base:{},cash:{}},
+  dividends:[],
+  events:[],
   taxPlan:{isaLimit:20000000,pensionLimit:6000000,creditRate:13.2},
   plan:{sellPrice:null,sellCost:null,extraCash:null,loan:500000000,rate:4,years:30,buyCostPct:3.5,payParents:false},
   recurring:[],
@@ -391,7 +395,7 @@ const DEFAULT={
     supabaseUrl:"",supabaseKey:"",syncCode:"",theme:"auto"}
 };
 let S=JSON.parse(JSON.stringify(DEFAULT));
-let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false, contribFormOpen=false;
+let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false, contribFormOpen=false, divFormOpen=false, evFormOpen=false, txQuery="";
 let syncState={status:"local",error:""};
 
 /* ══════════════ 저장소 (Claude storage → localStorage → Google Drive) ══════════════ */
@@ -692,34 +696,7 @@ async function callGemini(model,prompt,web){
   if(!text) throw new Error("empty response");
   return text;
 }
-/* OpenAI 호환 FactChat 게이트웨이 호출 */
-async function callFactChat(prompt,web){
-  const k=(S.settings.factchatKey||"").trim();
-  const base=(S.settings.factchatBase||"").trim().replace(/\/$/,"");
-  const model=(S.settings.factchatModel||"").trim();
-  if(!k||!model){ const e=new Error("nokey"); e.nokey=true; throw e; }
-  const sys=web
-    ? "너는 실시간 웹 검색 도구가 없을 수 있다. 최신 정보(시세, 뉴스 등)를 확실히 알 수 없다면 추측하지 말고 '실시간 정보를 확인할 수 없다'고 명시한 뒤 알고 있는 범위에서 답하고, 확인이 필요하다는 점을 분명히 밝혀라."
-    : "";
-  const res=await fetch(base+"/chat/completions",{
-    method:"POST",
-    headers:{ "Content-Type":"application/json", "Authorization":"Bearer "+k },
-    body:JSON.stringify({ model, messages: sys?[{role:"system",content:sys},{role:"user",content:prompt}]:[{role:"user",content:prompt}] })
-  });
-  if(!res.ok){
-    let msg=""; try{ const j=await res.json(); msg=(j.error&&j.error.message)||JSON.stringify(j); }catch(_){}
-    const e=new Error("api "+res.status); e.status=res.status; e.detail=msg; throw e;
-  }
-  const j=await res.json();
-  const text=j.choices&&j.choices[0]&&j.choices[0].message&&j.choices[0].message.content;
-  if(!text) throw new Error("empty response");
-  return text.trim();
-}
-
 async function ai(prompt,web){
-  if((S.settings.provider||"gemini")==="factchat"){
-    return await callFactChat(prompt,web);
-  }
   const k=(S.settings.apiKey||"").trim();
   if(!k){ const e=new Error("nokey"); e.nokey=true; throw e; }
   const chain=modelChain();
@@ -739,12 +716,10 @@ async function ai(prompt,web){
   throw lastErr||new Error("모든 모델의 한도를 초과했습니다.");
 }
 function aiErr(e,what){
-  const fc=(S.settings.provider||"gemini")==="factchat";
-  if(e&&e.nokey) return fc?"설정 탭에서 FactChat API 키와 모델 ID를 먼저 입력해 주세요.":"설정 탭에서 Google AI Studio API 키를 먼저 입력해 주세요.";
-  if(e&&e.status===429) return fc?"게이트웨이 한도(크레딧)에 걸렸습니다. 대시보드에서 남은 크레딧을 확인해 주세요.":"오늘 등록된 모델을 모두 써서 한도에 걸렸습니다. 내일 다시 시도하거나 설정에서 모델 목록을 늘려주세요.";
-  if(e&&e.status===404) return fc?"모델 ID를 찾을 수 없습니다. 대시보드의 모델 목록에서 정확한 ID를 다시 확인해 주세요.":"모델 이름을 찾을 수 없습니다. 설정에서 모델 목록을 확인해 주세요.";
-  if(e&&e.status===401) return fc?"API 키 인증에 실패했습니다. 대시보드에서 키를 다시 확인해 주세요.":"API 키가 올바르지 않습니다.";
-  if(e&&e.status===400&&/API key/i.test(e.detail||"")) return "API 키가 올바르지 않습니다. 설정에서 다시 확인해 주세요.";
+  if(e&&e.nokey) return "설정 탭에서 Google AI Studio API 키를 먼저 입력해 주세요.";
+  if(e&&e.status===429) return "오늘 등록된 모델을 모두 써서 한도에 걸렸습니다. 내일 다시 시도하거나 설정에서 모델 목록을 늘려주세요.";
+  if(e&&e.status===404) return "모델 이름을 찾을 수 없습니다. 설정에서 모델 목록을 확인해 주세요.";
+  if(e&&(e.status===401||(e.status===400&&/API key/i.test(e.detail||"")))) return "API 키가 올바르지 않습니다. 설정에서 다시 확인해 주세요.";
   return what+"에 실패했습니다. 잠시 후 다시 시도해 주세요."+(e&&e.detail?` (${e.detail.slice(0,80)})`:"");
 }
 const stripJson=t=>t.replace(/```json|```/g,"").trim();
@@ -825,9 +800,9 @@ function checkCard(c,pace){
   // 생활비는 한 달 총액 하나만 본다. 달이 지난 비율보다 많이 썼으면 경고.
   const bi=budgetInfo();
   if(bi.total){
-    const daysIn=new Date(+m.slice(0,4),+m.slice(5,7),0).getDate(), timePct=day/daysIn*100;
+    const timePct=bi.timePct;
     const k=bi.pct>100?"bad":bi.pct>timePct+10?"warn":"ok";
-    rows.push([k,`생활비 ${Math.round(bi.pct)}% 사용 <span class="faint">(이번 달 ${Math.round(timePct)}% 지남)</span>${k==="ok"?" · 속도 괜찮아요":k==="warn"?" · 조금 빨라요":" · 예산 초과"}`]);
+    rows.push([k,`생활비 ${Math.round(bi.pct)}% 사용 <span class="faint">(${bi.range.payday>1?"이번 기간":"이번 달"} ${Math.round(timePct)}% 지남)</span>${k==="ok"?" · 속도 괜찮아요":k==="warn"?" · 조금 빨라요":" · 예산 초과"}`]);
   }
   const repaid=S.tx.filter(t=>t.famRepay&&ym(t.date)===m).reduce((s,t)=>s+t.amount,0);
   const fp=famPlan(c);
@@ -920,7 +895,7 @@ function txEditForm(t){
       <label class="tx-flag"><input type="checkbox" id="etSi" ${t.sideIncome?"checked":""}>부수입</label>
       <label class="tx-flag"><input type="checkbox" id="etFx" ${isFixed(t)?"checked":""}>고정비</label>
     </div>
-    <div class="btnrow"><button class="btn tiny" data-txsave="${t.id}">저장</button><button class="btn ghost tiny" data-txcancel>취소</button>${t.recurring?"":`<button class="btn ghost tiny" data-txrec="${t.id}">매달 반복으로 등록</button>`}</div>
+    <div class="btnrow"><button class="btn tiny" data-txsave="${t.id}">저장</button><button class="btn ghost tiny" data-txcancel>취소</button><button class="btn ghost tiny" data-txdel="${t.id}" style="color:var(--down)">삭제</button>${t.recurring?"":`<button class="btn ghost tiny" data-txrec="${t.id}">매달 반복으로 등록</button>`}</div>
   </div>`;
 }
 const NAV_ICONS={
@@ -1029,7 +1004,7 @@ function contribCard(){
   const recent=(S.contribs||[]).filter(x=>x.date.slice(0,4)===y).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5);
   return `<div class="card" id="contribCard"><div class="rowline"><strong>${y}년 ISA·연금 납입</strong><button class="edit-pill" data-contribform>${contribFormOpen?"닫기":"+ 납입 기록"}</button></div>
     ${contribFormOpen?`<div style="margin:12px 0 4px">
-      <div class="grid2" style="margin-bottom:8px"><select id="cfAcct">${["ISA","연금저축"].map(a=>`<option>${a}</option>`).join("")}</select><input type="text" id="cfAmt" class="amt" inputmode="numeric" placeholder="넣은 금액"></div>
+      <div class="grid2" style="margin-bottom:8px"><select id="cfAcct">${["ISA","연금저축","일반"].map(a=>`<option>${a}</option>`).join("")}</select><input type="text" id="cfAmt" class="amt" inputmode="numeric" placeholder="넣은 금액"></div>
       <div class="grid2"><input type="date" id="cfDate" value="${today()}" max="${today()}"><button class="btn tiny" id="cfSave" style="flex:0 0 auto">기록</button></div>
     </div>`:""}
     ${row("ISA",tp.isaLimit)}
@@ -1045,12 +1020,108 @@ function contribCard(){
     </details>
   </div>`;
 }
+// 생활비 기간: 월급날이 1일이 아니면 월급날부터 다음 월급 전날까지를 한 달로 본다.
+function periodRange(d=today()){
+  const pd=Math.min(28,Math.max(1,+(S.budgets&&S.budgets.payday)||1));
+  const y=+d.slice(0,4), mo=+d.slice(5,7), dd=+d.slice(8,10);
+  const iso=(yy,mm,day)=>{const x=new Date(yy,mm-1,day);return `${x.getFullYear()}-${pad(x.getMonth()+1)}-${pad(x.getDate())}`;};
+  const start=dd>=pd?iso(y,mo,pd):iso(y,mo-1,pd);
+  const end=iso(+start.slice(0,4),+start.slice(5,7)+1,pd-1);
+  return {start,end,payday:pd};
+}
+const dayDiff=(a,b)=>Math.round((new Date(b)-new Date(a))/864e5);
+function splitRange(from,to){
+  const ex=S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&t.date>=from&&t.date<=to);
+  const fixed=ex.filter(isFixed).reduce((s,t)=>s+t.amount,0);
+  return {fixed,variable:ex.reduce((s,t)=>s+t.amount,0)-fixed};
+}
+// 기록 검색: 내용·범주·금액에 검색어가 들어간 기록
+function searchTx(q){
+  q=q.trim().toLowerCase(); if(!q) return [];
+  const num=/^[\d,\s원]+$/.test(q)?q.replace(/[^\d]/g,""):"";
+  return S.tx.filter(t=>num?String(t.amount).includes(num):(t.item||"").toLowerCase().includes(q)||(t.cat||"").toLowerCase().includes(q))
+    .sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0);
+}
+// 진짜 투자 수익률: 원금(시작 원금 + 납입 기록) 대비 지금 가치(주식 평가 + 예수금).
+// 배당을 예수금에 두면 자동으로 수익에 들어가고, 배당 기록은 얼마 받았는지 보는 용도다.
+function investRows(){
+  const iv=S.invest||{base:{},cash:{}};
+  return ACCOUNTS.map(a=>{
+    const st=S.stocks.filter(s=>(s.account||"일반")===a);
+    const cost=st.reduce((t,s)=>t+s.buyPrice*s.qty,0), stockVal=st.reduce((t,s)=>t+(s.currentPrice!=null?s.currentPrice:s.buyPrice)*s.qty,0);
+    const cash=+(iv.cash||{})[a]||0, baseSet=(iv.base||{})[a]!=null&&(iv.base||{})[a]!=="";
+    const contrib=(S.contribs||[]).filter(x=>x.account===a).reduce((t,x)=>t+x.amount,0);
+    const principal=baseSet||contrib?(+(iv.base||{})[a]||0)+contrib:cost+cash;
+    const value=stockVal+cash, div=(S.dividends||[]).filter(x=>x.account===a).reduce((t,x)=>t+x.amount,0);
+    return {a,principal,value,cash,div,guessed:!baseSet&&!contrib,pl:value-principal};
+  }).filter(r=>r.value||r.principal);
+}
+function investCard(){
+  const rows=investRows(), iv=S.invest||{base:{},cash:{}}, y=today().slice(0,4);
+  const P=rows.reduce((t,r)=>t+r.principal,0), V=rows.reduce((t,r)=>t+r.value,0), pl=V-P;
+  const divs=S.dividends||[], divYear=divs.filter(x=>x.date.slice(0,4)===y).reduce((t,x)=>t+x.amount,0), divAll=divs.reduce((t,x)=>t+x.amount,0);
+  const sign=v=>v>=0?"+":"−", col=v=>v>=0?"var(--up)":"var(--down)", pct=(v,b)=>b?` (${sign(v)}${Math.abs(v/b*100).toFixed(1)}%)`:"";
+  const recent=[...divs].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5);
+  return `<div class="card" id="investCard"><div class="rowline"><strong>투자 성과</strong><button class="edit-pill" data-divform>${divFormOpen?"닫기":"+ 배당 기록"}</button></div>
+    ${divFormOpen?`<div style="margin:12px 0 4px">
+      <div class="grid2" style="margin-bottom:8px"><select id="dvAcct">${ACCOUNTS.map(a=>`<option>${a}</option>`).join("")}</select><input type="text" id="dvAmt" class="amt" inputmode="numeric" placeholder="받은 배당금"></div>
+      <div class="grid2"><input type="date" id="dvDate" value="${today()}" max="${today()}"><button class="btn tiny" id="dvSave" style="flex:0 0 auto">기록</button></div>
+    </div>`:""}
+    ${P?`<div class="calc-result"><div class="lbl">넣은 돈 ${won(P)}원 → 지금 ${won(V)}원</div><div class="big" style="color:${col(pl)}">${sign(pl)}${won(Math.abs(pl))}원${pct(pl,P)}</div></div>`:`<div class="faint" style="margin-top:8px">주식을 등록하면 계좌별 수익을 보여드려요.</div>`}
+    ${rows.map(r=>`<div class="rowline" style="padding:8px 0;border-top:1px solid var(--line2)"><span style="display:flex;align-items:center;gap:6px"><i class="acct-dot" style="background:${acctColor(r.a).c}"></i><b>${r.a}</b><span class="faint">원금 ${korWon(r.principal)}${r.guessed?"(매입가)":""}</span></span><span style="color:${col(r.pl)};font-weight:700">${sign(r.pl)}${korWon(Math.abs(r.pl))}${pct(r.pl,r.principal)}</span></div>`).join("")}
+    <div class="faint" style="margin-top:6px">배당 올해 ${won(divYear)}원 · 지금까지 ${won(divAll)}원</div>
+    ${recent.length?`<div style="margin-top:4px">${recent.map(x=>`<div class="rec-row"><span class="faint" style="flex:0 0 auto">${fmtDate(x.date)}</span><span class="nm">${esc(x.account)} 배당</span><b>${won(x.amount)}</b><button class="del" data-dvdel="${x.id}" aria-label="배당 기록 지우기">×</button></div>`).join("")}</div>`:""}
+    <details style="margin-top:10px"><summary class="faint" style="cursor:pointer">원금·예수금 설정</summary>
+      <div class="calc-grid">${ACCOUNTS.map(a=>`<label><div class="lbl">${a} 시작 원금</div><input type="text" class="amt" inputmode="numeric" data-invbase="${a}" value="${(iv.base||{})[a]!=null&&(iv.base||{})[a]!==""?won(iv.base[a]):""}" placeholder="비우면 매입가"></label><label><div class="lbl">${a} 예수금</div><input type="text" class="amt" inputmode="numeric" data-invcash="${a}" value="${(iv.cash||{})[a]?won(iv.cash[a]):""}" placeholder="0"></label>`).join("")}</div>
+      <div class="faint">원금 = 시작 원금 + 위 납입 기록(일반 계좌 포함) 합계. 시작 원금은 납입 기록을 남기기 전까지 넣은 돈이에요. 예수금은 수익 계산에만 쓰고 순자산에는 넣지 않아요.</div>
+    </details>
+  </div>`;
+}
+// 앞으로 10년: 지금 순자산 + 매달 늘어나는 속도로 이어 그리고, 큰 지출(인생 이벤트)을 뺀다.
+function eventsCard(c){
+  const pace=monthlyPace(), pv=pace?pace.v:0, y0=+today().slice(0,4);
+  const liquid=S.others.filter(o=>LIQUID.test(o.name)).reduce((s,o)=>s+o.amount,0);
+  const ev=(S.events||[]).filter(e=>+e.year>=y0).sort((a,b)=>a.year-b.year);
+  const spentBy=y=>ev.filter(e=>+e.year<=y).reduce((s,e)=>s+e.amount,0);
+  const pts=Array.from({length:11},(_,k)=>({y:y0+k,net:c.net+pv*12*k-spentBy(y0+k)}));
+  const W=320,H=130,pl=6,pr=6,pt=14,pb=20;
+  const vals=pts.map(p=>p.net), lo=Math.min(0,...vals), hi=Math.max(...vals,1);
+  const X=k=>pl+k*(W-pl-pr)/10, Yp=v=>pt+(hi-v)/(hi-lo||1)*(H-pt-pb);
+  const line=pts.map((p,k)=>`${k?"L":"M"}${X(k).toFixed(1)},${Yp(p.net).toFixed(1)}`).join("");
+  const marks=[...new Set(ev.map(e=>+e.year))].filter(y=>y<=y0+10).map(y=>{const k=y-y0;return `<line x1="${X(k)}" x2="${X(k)}" y1="${pt}" y2="${H-pb}" stroke="var(--amber)" stroke-dasharray="3 3"/><circle cx="${X(k)}" cy="${Yp(pts[k].net)}" r="4" fill="var(--amber)"/>`;}).join("");
+  const svg=`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="앞으로 10년 예상 순자산" style="display:block;margin:10px 0 4px">
+    ${lo<0?`<line x1="${pl}" x2="${W-pr}" y1="${Yp(0)}" y2="${Yp(0)}" stroke="var(--line)"/>`:""}
+    <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>${marks}
+    ${[0,5,10].map(k=>`<text x="${X(k)}" y="${H-4}" font-size="10" fill="var(--ink3,#888)" text-anchor="${k?k===10?"end":"middle":"start"}">${y0+k}</text>`).join("")}
+  </svg>`;
+  // 이벤트마다: 그 해까지 모을 수 있는 현금(지금 현금성 자산 + 가계부상 매달 남는 돈)에서 앞선 이벤트를 빼고 남는지 본다.
+  const done=recentMonths(4).slice(0,3).map(monthAgg).filter(a=>a.base+a.side+a.expense>0);
+  const save=done.length?done.reduce((s,a)=>s+a.base+a.side-a.expense,0)/done.length:pv;
+  let used=0;
+  const list=ev.map(e=>{
+    const months=Math.max(0,(+e.year-y0)*12+(12-+today().slice(5,7)));
+    const pool=liquid+Math.max(0,save)*months-used; used+=e.amount;
+    const gap=pool-e.amount;
+    return `<div class="rec-row"><span class="faint" style="flex:0 0 auto">${e.year}</span><span class="nm">${esc(e.name)} <span class="faint">${korWon(e.amount)}</span></span><b style="color:${gap>=0?"var(--up)":"var(--down)"};font-size:12.5px">${gap>=0?"여유 "+korWon(gap):"부족 "+korWon(-gap)}</b><button class="del" data-evdel="${e.id}" aria-label="이벤트 지우기">×</button></div>`;
+  }).join("");
+  return `<div class="card" id="eventsCard"><div class="rowline"><strong>앞으로 10년</strong><button class="edit-pill" data-evform>${evFormOpen?"닫기":"+ 이벤트"}</button></div>
+    ${evFormOpen?`<div style="margin:12px 0 4px">
+      <div class="grid2" style="margin-bottom:8px"><input type="text" id="evName" placeholder="예: 차 바꾸기, 결혼"><input type="number" id="evYear" inputmode="numeric" min="${y0}" max="${y0+30}" value="${y0+1}" aria-label="연도"></div>
+      <div class="grid2"><input type="text" id="evAmt" class="amt" inputmode="numeric" placeholder="드는 돈"><button class="btn tiny" id="evSave" style="flex:0 0 auto">추가</button></div>
+    </div>`:""}
+    ${svg}
+    <div class="rowline faint"><span>지금 ${korWon(c.net)}</span><span>${y0+10}년 예상 <b style="color:var(--ink)">${korWon(pts[10].net)}</b></span></div>
+    <div class="faint" style="margin-top:4px">${pace?`순자산이 한 달 ${korWon(Math.abs(pv))}씩 ${pv>=0?"늘어나는":"줄어드는"} 속도(${pace.basis})를 그대로 이어 그렸어요. 집값·주가 변동은 넣지 않았어요.`:"기록이 쌓이면 순자산이 늘어나는 속도로 예상해 드려요."}</div>
+    ${list?`<div style="margin-top:8px">${list}</div><div class="faint" style="margin-top:4px">여유/부족은 지금 현금성 자산(예금·적금 등)에 그 해 말까지 가계부상 남는 돈(한 달 약 ${korWon(Math.max(0,save))})을 더하고, 앞선 이벤트를 뺀 금액으로 계산해요.</div>`:`<div class="faint" style="margin-top:8px">결혼, 차, 이사처럼 큰돈이 드는 일을 넣으면 그때 돈이 충분한지 미리 볼 수 있어요.</div>`}
+  </div>`;
+}
 // 한 달 생활비(총액)만 쓴다. 예전에 넣어둔 카테고리별 예산은 무시한다.
 // 생활비 예산은 변동비만 비교한다 (고정비와 부모님 상환은 제외).
 function budgetInfo(){
   const total=+(S.budgets&&S.budgets.monthlyTotal)||0;
-  const {fixed,variable}=fixedSplit(ym(today()));
-  return {total,spent:variable,fixed,remaining:total-variable,pct:total?variable/total*100:0};
+  const r=periodRange(), {fixed,variable}=splitRange(r.start,r.end);
+  const len=dayDiff(r.start,r.end)+1, gone=dayDiff(r.start,today())+1;
+  return {total,spent:variable,fixed,remaining:total-variable,pct:total?variable/total*100:0,range:r,timePct:gone/len*100,daysLeft:len-gone};
 }
 function catRows(from){
   const m={};
@@ -1168,8 +1239,7 @@ function txEntry(t){
   return `<div class="entry ${t.type}" data-edittx="${t.id}">
     <span class="cat">${esc(t.cat)}</span>
     <span class="nm">${esc(t.item)}${t.parentCard?'<span class="chip p">부</span>':""}${t.famRepay?'<span class="chip r">상환</span>':""}${t.sideIncome?'<span class="chip s">부수입</span>':""}${t.recurring?'<span class="chip rec">반복</span>':""}${t.fixed===true&&!t.recurring?'<span class="chip rec">고정</span>':""}</span>
-    <span class="val" style="color:${t.type==="income"?"var(--up)":"var(--down)"}">${t.type==="income"?"+":"−"}${won(t.amount)}</span>
-    <button class="del" data-del="${t.id}" aria-label="지우기">×</button></div>`;
+    <span class="val" style="color:${t.type==="income"?"var(--up)":"var(--down)"}">${t.type==="income"?"+":"−"}${won(t.amount)}</span></div>`;
 }
 function dateGroups(list){
   const groups={};
@@ -1261,9 +1331,9 @@ function render(){
     h+=`</div>`;
     const bi=budgetInfo();
     if(bi.total){
-      h+=`<div class="budget-card"><div class="budget-top"><div><div class="lbl">이번 달 남은 생활비</div><div class="budget-remaining" style="color:${bi.remaining<0?'var(--down)':'var(--ink)'}">${bi.remaining<0?'초과 ':''}${won(Math.abs(bi.remaining))}원</div></div><div class="muted">${Math.round(bi.pct)}% 사용</div></div>
+      h+=`<div class="budget-card"><div class="budget-top"><div><div class="lbl">${bi.range.payday>1?`남은 생활비 · ${md(bi.range.start)}–${md(bi.range.end)}`:"이번 달 남은 생활비"}</div><div class="budget-remaining" style="color:${bi.remaining<0?'var(--down)':'var(--ink)'}">${bi.remaining<0?'초과 ':''}${won(Math.abs(bi.remaining))}원</div></div><div class="muted">${Math.round(bi.pct)}% 사용</div></div>
         <div class="bar"><i style="width:${Math.min(100,bi.pct)}%;background:${bi.pct>100?'var(--down)':bi.pct>80?'var(--amber)':'var(--accent)'}"></i></div>
-        <div class="rowline faint" style="margin-top:7px"><span>변동비 ${won(bi.spent)}원 사용</span><span>한 달 생활비 ${won(bi.total)}원</span></div>
+        <div class="rowline faint" style="margin-top:7px"><span>변동비 ${won(bi.spent)}원 사용 · ${bi.daysLeft}일 남음</span><span>한 달 생활비 ${won(bi.total)}원</span></div>
         ${bi.fixed?`<div class="faint" style="margin-top:4px">고정비 ${won(bi.fixed)}원은 따로 빼고 계산했어요</div>`:""}
       </div>`;
     }else{
@@ -1338,9 +1408,7 @@ function render(){
     </div>`;
 
     if(txView==="expense"){
-      h+=`<div class="sec">이번 주 지출</div>${pie(wRows,wTot,132,true,"이번 주 지출 기록이 없습니다.")}
-        <div class="sec">이번 달 지출</div>${pie(mRows,mTot,150,true,"이번 달 지출 기록이 없습니다.")}
-        <div class="sec">범주별 지출</div>${catBars(mRows,mTot)}
+      h+=`<div class="sec">이번 달 범주별 지출</div>${catBars(mRows,mTot)}
         <div class="sec">월별 지출 추세</div>${trendChart(mths,aggs.map(a=>a.expense),"#F04452","최근 6개월 지출")}`;
     }else{
       h+=`<div class="sec">이번 달 수입</div>${pie(incRows,incTot,132,true,"이번 달 수입 기록이 없습니다.")}
@@ -1349,6 +1417,15 @@ function render(){
         <div class="faint" style="margin-top:7px">최근 6개월 부수입 합계 ${won(aggs.reduce((a,b)=>a+b.side,0))}원</div>`;
     }
 
+    h+=`<div class="search-box"><input type="search" id="txSearch" placeholder="기록 검색 (내용·범주·금액)" value="${esc(txQuery)}" aria-label="기록 검색"></div>`;
+    if(txQuery.trim()){
+      const found=searchTx(txQuery), ex=found.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0), inc=found.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+      h+=`<div class="sec">검색 결과 ${found.length}건</div><div class="faint" style="margin:-7px 2px 11px">${ex?`지출 ${won(ex)}원`:""}${ex&&inc?" · ":""}${inc?`수입 ${won(inc)}원`:""}${found.length>100?" · 최근 100건만 보여요":""}</div>`;
+      if(!found.length) h+=`<div class="empty-state">찾는 기록이 없어요.</div>`;
+      dateGroups(found.slice(0,100)).forEach(([d,items])=>{
+        h+=`<div class="card" style="padding:3px 15px 5px"><div class="daterow">${fmtDate(d)}</div>${items.map(txEntry).join("")}</div>`;
+      });
+    }else{
     const selected=S.tx.filter(t=>t.type===txView).sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0);
     const cutoff=daysAgo(6);
     const recent=selected.filter(t=>t.date>=cutoff);
@@ -1368,6 +1445,7 @@ function render(){
         dateGroups(items).forEach(([d,dayItems])=>{h+=`<div class="daterow">${fmtDate(d)}</div>${dayItems.map(txEntry).join("")}`;});
         h+=`</div></details>`;
       });
+    }
     }
     h+=`<div class="sec">지난달 결산</div>`+(monthSummary(recentMonths(2)[0])||`<div class="faint">지난달 기록이 없어요.</div>`);
   }
@@ -1415,6 +1493,7 @@ function render(){
       ${byAcct.length?`<div class="acct-bar" role="img" aria-label="계좌별 비중">${byAcct.map(x=>`<i style="flex:${x.val};background:${acctColor(x.a).c}"></i>`).join("")}</div>
       ${byAcct.map(x=>`<button class="acct-row" data-stacct-tab="${x.a}"><i class="acct-dot" style="background:${acctColor(x.a).c}"></i><span>${x.a}</span><span class="pc">${Math.round(x.val/pfVal*100)}%</span><b>${won(x.val)}원</b></button>`).join("")}`:""}
     </div>
+    ${S.stocks.length?investCard():""}
 
     ${window.__priceReview ? `
     <div class="card" style="margin-bottom:14px">
@@ -1508,7 +1587,7 @@ function render(){
 
     // 부동산 시세는 "자산 수정"을 누르지 않아도 바로 고칠 수 있게 항상 입력칸을 보여준다.
     h+=`<details class="estate-fold" open>
-      <summary><span>🏠 부동산</span><span class="weekmeta">${won(c.re)}원</span></summary>
+      <summary><span>부동산</span><span class="weekmeta">${won(c.re)}원</span></summary>
       <div class="estate-body">
         <div style="padding-top:14px;font-weight:700">${esc(S.realEstate.name)}</div>
         <div class="field" style="margin-top:10px"><div class="lbl">현재 시세 (직접 입력)</div><input type="text" class="amt" id="reprice" inputmode="numeric" value="${won(c.re)}"></div>
@@ -1520,6 +1599,7 @@ function render(){
       </div>
     </details>`;
     h+=swapCalc(c);
+    h+=eventsCard(c);
 
     h+=`<div class="sec">기타 자산 <span class="muted" style="font-weight:400">${won(c.othersSum)}원</span></div>
     <div class="faint" style="margin-bottom:9px">현금, 예금, 교직원공제회, 주택청약 등을 한곳에서 봅니다.</div>`;
@@ -1533,24 +1613,6 @@ function render(){
     h+=`${assetEdit?`<div class="btnrow"><button class="btn ghost tiny" id="addother">항목 추가</button></div>`:""}
 
     `;
-    if(assetEdit||window.__rec) h+=`<div class="sec">아파트 추천</div>`;
-    if(assetEdit) h+=`<button class="btn full" id="recommend" ${busy.rec?"disabled":""}>${spin(busy.rec,busy.rec?"시장 분석 중…":"내 재무상태에 맞는 아파트 추천받기")}</button>`;
-    if(window.__rec){
-      const r=window.__rec;
-      h+=`<div class="card" style="margin-top:13px">
-        <div class="lbl">추천 · ${fmtDate(r.date)}</div>
-        <div class="faint" style="margin-bottom:10px">조건: 300세대 이상 · 서울·경기 서쪽</div>`;
-      (r.items||[]).forEach((it,i)=>{
-        h+=`<div style="padding:10px 0;border-top:1px solid var(--line2)">
-          <div class="rowline" style="font-size:13.5px"><span style="flex:1;min-width:0">${esc(it.name)}</span><span class="muted">${uk(it.price)}</span></div>
-          <div class="faint" style="margin:3px 0">${esc(it.location||"")}${it.household?` · ${it.household}세대`:""}</div>
-          <div class="muted" style="margin:4px 0 8px">${esc(it.why)}</div>
-          <div class="btnrow"><button class="btn ghost tiny" data-apply="1" data-idx="${i}">1단계 목표로 설정</button><button class="btn ghost tiny" data-apply="2" data-idx="${i}">2단계 목표로 설정</button></div>
-        </div>`;
-      });
-      if(r.comment) h+=`<div style="margin-top:13px;padding-top:11px;border-top:1px solid var(--line)"><div class="prose">${esc(r.comment)}</div></div>`;
-      h+=`</div>`;
-    }
   }
 
   /* ───── 설정 ───── */
@@ -1558,17 +1620,10 @@ function render(){
     h+=`<div class="subpage-head"><strong>설정</strong></div>
     <div class="sec" id="budgetSettings" style="margin-top:2px">한 달 생활비</div>
     <div class="card"><div class="field"><div class="lbl">한 달에 쓸 생활비</div><input type="text" class="amt" id="budgetTotal" inputmode="numeric" value="${S.budgets?.monthlyTotal?won(S.budgets.monthlyTotal):''}" placeholder="예: 2,000,000"></div>
-      <div class="faint">고정비(매달 반복·고정비로 표시한 기록)와 부모님 상환은 빼고, 이번 달 변동비만 이 금액과 비교해요.</div></div>
-    <div class="faint" style="margin:6px 2px 17px">아래 내용은 분석과 조언을 만들 때 항상 함께 전달됩니다. 언제든 고치면 다음 조언부터 반영돼요.</div>
-    <div class="card"><div class="lbl">코칭 참고사항 — 조언할 때 지켜야 할 것</div>
-      <textarea rows="4" data-prof="coachNote">${esc(S.profile.coachNote)}</textarea></div>
-    <div class="card"><div class="lbl">생활 배경</div>
-      <textarea rows="3" data-prof="lifeNote">${esc(S.profile.lifeNote)}</textarea></div>
-    <div class="card"><div class="lbl">소득 구조</div>
-      <textarea rows="3" data-prof="incomeNote">${esc(S.profile.incomeNote)}</textarea></div>
-    <div class="card"><div class="lbl">목표 / 투자성향</div>
-      <div class="field"><input type="text" data-prof="goal" value="${esc(S.profile.goal)}"></div>
-      <select data-prof="risk">${["안정형","중립형","공격형"].map(r=>`<option${r===S.profile.risk?" selected":""}>${r}</option>`).join("")}</select></div>
+      <div class="faint">고정비(매달 반복·고정비로 표시한 기록)와 부모님 상환은 빼고, 이번 기간 변동비만 이 금액과 비교해요.</div>
+      <div class="field" style="margin-top:12px"><div class="lbl">월급날 (생활비 한 달의 시작)</div><select id="payday">${Array.from({length:28},(_,i)=>i+1).map(d=>`<option value="${d}"${(S.budgets?.payday||1)===d?" selected":""}>${d===1?"1일 (달력 기준)":d+"일"}</option>`).join("")}</select></div>
+      <div class="faint">예: 17일로 두면 17일부터 다음 달 16일까지를 한 달로 봐요.</div></div>
+
 
     <div class="sec" id="accountSec">계정 (기기 간 동기화)</div>
     <div class="card">${accountCard()}</div>
@@ -1578,29 +1633,6 @@ function render(){
       ${[["auto","폰 설정 따라"],["light","라이트"],["dark","다크"]].map(([v,l])=>`<button role="tab" aria-selected="${(S.settings.theme||"auto")===v}" data-themeset="${v}">${l}</button>`).join("")}
     </div>
 
-    <div class="sec">AI 제공자</div>
-    <div class="card" style="margin-bottom:8px">
-      <div class="btnrow">
-        <button class="btn ${S.settings.provider!=="factchat"?"":"ghost"}" id="provGemini">Google Gemini</button>
-        <button class="btn ${S.settings.provider==="factchat"?"":"ghost"}" id="provFactchat">아이스크림에듀 게이트웨이</button>
-      </div>
-    </div>
-
-    ${S.settings.provider==="factchat" ? `
-    <div class="sec">아이스크림에듀 API Gateway</div>
-    <div class="card">
-      <div class="field"><div class="lbl">API 키</div>
-        <input type="password" data-set="factchatKey" value="${esc(S.settings.factchatKey)}" placeholder="pmmq..."></div>
-      <div class="field"><div class="lbl">Base URL</div>
-        <input type="text" data-set="factchatBase" value="${esc(S.settings.factchatBase)}"></div>
-      <div class="field"><div class="lbl">모델 ID</div>
-        <input type="text" data-set="factchatModel" value="${esc(S.settings.factchatModel)}" placeholder="대시보드 모델 목록에서 정확한 ID 확인"></div>
-      <div class="faint">대시보드 "API로 호출할 수 있는 모델" 목록을 펼치면 모델 옆에 실제 ID가 적혀 있어요. 그 문자열을 그대로 넣어주세요.</div>
-      <div class="btnrow" style="margin-top:10px"><button class="btn ghost tiny" id="testai" ${busy.aiTest?"disabled":""}>${spin(busy.aiTest,busy.aiTest?"확인 중…":"연결 테스트")}</button></div>
-      ${window.__aiTestResult?`<div class="faint" style="margin-top:8px;white-space:pre-wrap">${esc(window.__aiTestResult)}</div>`:""}
-      <div class="faint" style="margin-top:8px;color:var(--amber)">이 게이트웨이는 실시간 웹 검색 연동 여부가 확인되지 않았어요. 시세·뉴스처럼 최신 정보가 필요한 기능은 정확도가 떨어질 수 있습니다. 문제가 생기면 답변에 "확인 필요"라고 표시하도록 해뒀어요. 아래 연결 테스트로 실제 웹 검색이 되는지 직접 확인해 보세요.</div>
-    </div>
-    ` : `
     <div class="sec">Google AI Studio API 키</div>
     <div class="card">
       <div class="field"><div class="lbl">API 키</div>
@@ -1613,7 +1645,6 @@ function render(){
       <div class="btnrow" style="margin-top:10px"><button class="btn ghost tiny" id="testai" ${busy.aiTest?"disabled":""}>${spin(busy.aiTest,busy.aiTest?"확인 중…":"연결 테스트")}</button></div>
       ${window.__aiTestResult?`<div class="faint" style="margin-top:8px;white-space:pre-wrap">${esc(window.__aiTestResult)}</div>`:""}
     </div>
-    `}
 
     <div class="sec">데이터</div>
     <div class="btnrow">
@@ -1711,17 +1742,44 @@ function bind(){
   $$("[data-gyears]").forEach(el=>el.onchange=async()=>{goalOf(el.dataset.gyears).years=Math.max(1,+el.value||1);await commit()});
   $$("[data-gdel]").forEach(el=>el.onclick=async()=>{if(!confirm("이 목표를 삭제할까요?"))return;S.targets=S.targets.filter(t=>t.id!==el.dataset.gdel);renumberGoals();await commit()});
   $$("[data-gadd]").forEach(el=>el.onclick=async()=>{renumberGoals();S.targets.push({id:uid(),stage:S.targets.length+1,name:"새 목표",price:1000000000,loan:0,years:5});await commit()});
-  if($("#recommend")) $("#recommend").onclick=recommend;
-  $$("[data-apply]").forEach(el=>el.onclick=async()=>{
-    const st=+el.dataset.apply, it=window.__rec.items[+el.dataset.idx];
-    const t=S.targets.find(x=>x.stage===st);
-    if(t){ t.name=st+"단계 — "+it.name; t.price=Math.round(it.price); await commit(); }
+
+  // 월급날
+  if($("#payday")) $("#payday").onchange=async e=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.payday=+e.target.value||1;await commit()};
+  // 기록 검색: 입력이 멈추면 다시 그리고 입력칸 포커스를 되돌린다.
+  if($("#txSearch")) $("#txSearch").oninput=e=>{
+    clearTimeout(window.__srchT); const v=e.target.value;
+    window.__srchT=setTimeout(()=>{txQuery=v;render();const el=$("#txSearch");if(el){el.focus();el.setSelectionRange(v.length,v.length);}},250);
+  };
+  // 배당 기록
+  $$("[data-divform]").forEach(el=>el.onclick=()=>{divFormOpen=!divFormOpen;render()});
+  if($("#dvSave")) $("#dvSave").onclick=async()=>{
+    const amount=+$("#dvAmt").value.replace(/[^\d]/g,"")||0;
+    if(!amount){ notice="받은 배당금을 입력해 주세요."; return render(); }
+    S.dividends=S.dividends||[];
+    S.dividends.push({id:uid(),account:$("#dvAcct").value,amount,date:$("#dvDate").value||today()});
+    divFormOpen=false; notice=""; await commit();
+  };
+  $$("[data-dvdel]").forEach(el=>el.onclick=async()=>{if(!confirm("이 배당 기록을 지울까요?"))return;S.dividends=(S.dividends||[]).filter(x=>x.id!==el.dataset.dvdel);await commit()});
+  $$("[data-invbase],[data-invcash]").forEach(el=>el.onchange=async()=>{
+    S.invest={base:{...(S.invest?.base||{})},cash:{...(S.invest?.cash||{})}};
+    const raw=el.value.replace(/[^\d]/g,"");
+    if(el.dataset.invbase) S.invest.base[el.dataset.invbase]=raw===""?null:+raw;
+    else S.invest.cash[el.dataset.invcash]=+raw||0;
+    await commit();
   });
-
-
+  // 인생 이벤트
+  $$("[data-evform]").forEach(el=>el.onclick=()=>{evFormOpen=!evFormOpen;render()});
+  if($("#evSave")) $("#evSave").onclick=async()=>{
+    const name=$("#evName").value.trim(), year=+$("#evYear").value, amount=+$("#evAmt").value.replace(/[^\d]/g,"")||0;
+    if(!name||!year||!amount){ notice="이벤트 이름, 연도, 드는 돈을 모두 입력해 주세요."; return render(); }
+    S.events=S.events||[]; S.events.push({id:uid(),name,year,amount});
+    evFormOpen=false; notice=""; await commit();
+  };
+  $$("[data-evdel]").forEach(el=>el.onclick=async()=>{if(!confirm("이 이벤트를 지울까요?"))return;S.events=(S.events||[]).filter(x=>x.id!==el.dataset.evdel);await commit()});
   // 기록 수정
   $$("[data-edittx]").forEach(el=>el.onclick=()=>{editTxId=el.dataset.edittx;render()});
   $$("[data-txcancel]").forEach(el=>el.onclick=()=>{editTxId=null;render()});
+  $$("[data-txdel]").forEach(el=>el.onclick=async()=>{if(!confirm("이 기록을 지울까요?"))return;S.tx=S.tx.filter(t=>t.id!==el.dataset.txdel);editTxId=null;await commit()});
   $$("[data-txsave]").forEach(el=>el.onclick=async()=>{
     const t=S.tx.find(x=>x.id===el.dataset.txsave); if(!t) return;
     const amt=+$("#etAmt").value.replace(/[^\d]/g,"")||0; if(!amt){ notice="금액을 입력해 주세요."; return render(); }
@@ -1827,7 +1885,6 @@ function bind(){
     S.taxPlan[k]=k==="creditRate"?parseFloat(el.value):(+el.value.replace(/[^\d]/g,"")||DEFAULT.taxPlan[k]);
     await commit();
   });
-  $$("[data-prof]").forEach(el=>el.onchange=async()=>{S.profile[el.dataset.prof]=el.value;await commit()});
   $$("[data-set]").forEach(el=>{
     const flush=async(rerender)=>{
       const k=el.dataset.set;
@@ -1845,8 +1902,6 @@ function bind(){
     S.familyLoan[k]= k==="openingBalance" ? (+el.value.replace(/[^\d]/g,"")||0) : el.value.trim();
     await commit();
   });
-  if($("#provGemini")) $("#provGemini").onclick=async()=>{S.settings.provider="gemini";await commit()};
-  if($("#provFactchat")) $("#provFactchat").onclick=async()=>{S.settings.provider="factchat";await commit()};
   if($("#testai")) $("#testai").onclick=async()=>{
     busy.aiTest=true; window.__aiTestResult=""; render();
     try{
@@ -1906,21 +1961,6 @@ async function doParse(){
   busy.parse=false; render();
 }
 
-function ctx(){
-  const c=calc();
-  const recentQs=(S.chat||[]).filter(m=>m.role==="user").slice(-5).map(m=>m.text);
-  return `[고객 상황]
-목표: ${S.profile.goal} / 투자성향: ${S.profile.risk}
-생활 배경: ${S.profile.lifeNote}
-소득 구조: ${S.profile.incomeNote}
-자산: 부동산 ${won(c.re)}원, 주식·ETF ${won(c.stocksSum)}원, 기타자산 ${won(c.othersSum)}원 (${S.others.map(o=>o.name+" "+won(o.amount)).join(", ")})
-부채: 은행 주담대 ${won(c.bankDebt)}원(보금자리론 체증식 40년 3.8%, 다음 납입 ${c.ls.nextDate} ${won(c.ls.nextAmount)}원), 부모님 무이자 차입 ${won(c.familyDebt)}원
-순자산: ${won(c.net)}원
-목표: ${S.targets.map(t=>`${t.name} ${uk(t.price)} (${t.years}년 내)`).join(" / ")}
-${recentQs.length?`[고객이 상담 탭에서 최근 물어본 것들 — 리포트에서 관련 있으면 참고해라] ${recentQs.map(q=>`"${q}"`).join(" / ")}`:""}
-[반드시 지킬 것] ${S.profile.coachNote}`;
-}
-
 async function refreshPrice(){
   busy.price=true; notice=""; render();
   try{
@@ -1946,19 +1986,14 @@ JSON만 출력해라(설명·마크다운 없이):
 
 /* 장 마감 판정: 한국시간(KST) 기준 평일 16:00 이후. */
 function aiConfigured(){
-  return (S.settings.provider||"gemini")==="factchat"
-    ? !!((S.settings.factchatKey||"").trim() && (S.settings.factchatModel||"").trim())
-    : !!(S.settings.apiKey||"").trim();
+  return !!(S.settings.apiKey||"").trim();
 }
 
 /* 시세 조회: AI 웹검색으로 후보값을 받아온 뒤, 바로 반영하지 않고
    "제안 → 확인 → 적용" 단계를 거친다. 종목마다 이전가와 나란히 보여줘서
    이상한 값(오독·오검색)은 사람이 바로 걸러낼 수 있게 한다. */
-// 시세처럼 웹 검색이 꼭 필요한 요청은, 게이트웨이(FactChat)를 쓰고 있어도 Gemini로 보낸다.
-async function aiWithSearch(prompt){
-  const prev=S.settings.provider; S.settings.provider="gemini";
-  try{ return await ai(prompt,true); } finally{ S.settings.provider=prev; }
-}
+// 시세처럼 웹 검색이 꼭 필요한 요청.
+const aiWithSearch=prompt=>ai(prompt,true);
 async function fetchPriceProposals(){
   if(!S.stocks.length) return;
   // 자동 갱신(매일 오후 4시 반)으로 최근 종가가 들어와 있는 종목은 건너뛴다.
@@ -2015,29 +2050,6 @@ function applyPriceReview(){
   window.__priceReview=null;
   notice = applied ? `${applied}개 종목에 반영했습니다.` : "선택된 항목이 없어 반영하지 않았습니다.";
   commit();
-}
-
-async function recommend(){
-  busy.rec=true; notice=""; render();
-  const c=calc();
-  const p=`너는 한국 부동산과 재무설계에 밝은 전문가다. 웹 검색(네이버페이 부동산 실거래가·매물 우선)으로 최근 시세와 매물을 확인하고, 아래 고객의 현재 재무상태·가치관·목표에 맞는 아파트 매물을 추천해라.
-${ctx()}
-현재 보유: ${S.realEstate.name}, 시세 ${won(c.re)}원
-
-[반드시 지킬 조건]
-1) 총 세대수 300세대 이상인 단지만
-2) 서울·경기를 지도상 동서로 절반 나눴을 때 서쪽 지역만 (예: 마곡·목동·상암·은평·강서·부천·김포·고양·인천 접경 등. 강남·잠실·판교·분당처럼 동쪽은 제외)
-
-위 조건을 만족하는 실제 매물 3개를 추려라. "지금 이 고객의 재무상태에 맞는" 기준으로 골라라 (특정 단계 구분 없이).
-
-JSON만 출력해라(설명·마크다운 없이):
-{"items":[{"name":"단지명 (평형)","location":"동/구 단위 위치","household":정수(총 세대수),"price":정수(매물가 또는 최근 실거래가, 원),"why":"이 고객의 재무상태·가치관·목표에 맞는 이유 2~3문장"}],
- "comment":"이 3곳이 왜 지금 재무상태에 현실적인지, 관건이 무엇인지 4~5문장"}`;
-  try{
-    const o=JSON.parse(stripJson(await ai(p,true)));
-    window.__rec={...o,date:today()};
-  }catch(e){ notice=aiErr(e,"아파트 추천 생성"); }
-  busy.rec=false; render();
 }
 
 /* ══════════════ 시작 ══════════════ */
