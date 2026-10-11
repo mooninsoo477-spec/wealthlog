@@ -24,4 +24,5 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           SYNC_CODE: ${{ secrets.SYNC_CODE }}
+          WEALTH_USER_ID: ${{ secrets.WEALTH_USER_ID }}
         run: node scripts/update-stock-prices.mjs
