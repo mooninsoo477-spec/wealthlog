@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// GitHub Actions cron이 매 평일 장 마감 뒤 실행. 보유 종목 목록은 브라우저
-// localStorage에만 있으므로, 연결된 Supabase 동기화 테이블(wealth_data)에서
-// 읽어온 뒤 Yahoo Finance 일봉의 마지막 종가를 조회해 되돌려 쓴다.
-// 되돌려 쓸 때는 update_stock_prices RPC(Postgres 함수)를 통해 stocks 필드만
-// jsonb_set으로 교체한다 — 그 사이 앱에서 바뀐 다른 필드(tx, profile 등)를
-// 통째로 덮어쓰지 않기 위함. RPC 정의는 supabase/setup-stock-price-rpc.sql 참고.
+// GitHub Actions cron이 매 평일 장 마감 뒤 실행. 로그인 계정의 앱 데이터(wealth_user_state)에서
+// 보유 종목을 읽어 Yahoo Finance 일봉의 마지막 종가를 조회해 되돌려 쓴다.
+// 계정 행이 없으면 예전 동기화 코드 방식(wealth_data, SYNC_CODE)으로 처리한다.
+// 되돌려 쓸 때는 RPC(Postgres 함수)로 stocks 필드만 jsonb_set으로 교체해, 그 사이 앱에서 바뀐
+// 다른 필드(가계부 등)를 덮어쓰지 않는다. RPC 정의는 supabase/setup-login.sql 참고.
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -17,11 +16,25 @@ function requireEnv(name) {
 
 const SUPABASE_URL = requireEnv("SUPABASE_URL").replace(/\/$/, "");
 const SUPABASE_SECRET_KEY = requireEnv("SUPABASE_SECRET_KEY");
-const SYNC_CODE = requireEnv("SYNC_CODE");
+const SYNC_CODE = process.env.SYNC_CODE || "";
+// 계정이 여러 개일 때만 필요 (Supabase → Authentication → Users의 User UID).
+const USER_ID = process.env.WEALTH_USER_ID || "";
 
 // 새 Supabase Secret key는 JWT가 아니므로 Authorization 헤더가 아니라
 // apikey 헤더에만 보낸다. 키는 GitHub Secrets에만 저장한다.
 const supabaseHeaders = { apikey: SUPABASE_SECRET_KEY };
+
+async function fetchTarget() {
+  const q = USER_ID ? `&user_id=eq.${encodeURIComponent(USER_ID)}` : "";
+  const u = await fetch(`${SUPABASE_URL}/rest/v1/wealth_user_state?select=user_id,data${q}`, { headers: supabaseHeaders });
+  if (u.ok) {
+    const rows = await u.json();
+    if (rows.length > 1) throw new Error("계정이 여러 개라 어느 계정을 갱신할지 모릅니다. WEALTH_USER_ID 시크릿을 등록하세요.");
+    if (rows.length === 1) return { kind: "user", id: rows[0].user_id, data: rows[0].data };
+  }
+  if (!SYNC_CODE) throw new Error("갱신할 계정 데이터를 찾지 못했습니다. 앱에서 로그인해 한 번 동기화했는지 확인하세요.");
+  return { kind: "code", id: SYNC_CODE, data: await fetchRow() };
+}
 
 async function fetchRow() {
   const res = await fetch(
@@ -106,20 +119,23 @@ async function fetchLatestPrice(rawCode) {
   return null;
 }
 
-async function pushStocks(stocks) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/update_stock_prices`, {
+async function pushStocks(target, stocks) {
+  const user = target.kind === "user";
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${user ? "update_user_stock_prices" : "update_stock_prices"}`, {
     method: "POST",
     headers: {
       ...supabaseHeaders,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ p_id: SYNC_CODE, p_stocks: stocks }),
+    body: JSON.stringify(user ? { p_user: target.id, p_stocks: stocks } : { p_id: target.id, p_stocks: stocks }),
   });
   if (!res.ok) throw new Error(`Supabase 갱신 실패: ${res.status} ${await res.text()}`);
 }
 
 async function main() {
-  const data = await fetchRow();
+  const target = await fetchTarget();
+  const data = target.data;
+  console.log(target.kind === "user" ? "로그인 계정 데이터를 갱신합니다." : "예전 동기화 코드 데이터를 갱신합니다.");
   const stocks = Array.isArray(data.stocks) ? data.stocks : [];
   if (!stocks.length) {
     console.log("보유 종목이 없습니다. 종료.");
@@ -166,7 +182,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  await pushStocks(stocks);
+  await pushStocks(target, stocks);
   const summary = `갱신 완료: ${updated}개 성공, ${failed.length}개 실패${failed.length ? " — " + failed.join(", ") : ""}`;
   if (updated === 0 && failed.length > 0) {
     // 스크립트 자체는 안 죽었지만 실질적으로 아무 것도 갱신 못 했으므로,
