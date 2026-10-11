@@ -404,13 +404,120 @@ function merge(base,inc){
   }
   return o;
 }
-// 이 기기에만 두는 설정. Supabase 행은 anon key + 동기화 코드만 알면 읽히므로 키를 올리지 않는다.
+// 이 기기에만 두는 설정 (계정에 동기화하지 않음).
 const LOCAL_ONLY=["apiKey","factchatKey","supabaseUrl","supabaseKey","syncCode","theme"];
 const ts=v=>v?new Date(v).getTime()||0:0;
 // 마지막 동기화 이후 이 기기에서 저장만 되고 아직 올라가지 못한 변경이 있는지.
 function isDirty(){ const m=S.meta||{}; return ts(m.lastLocalSave)>ts(m.lastSync); }
+
+/* ── 로그인: Supabase Auth 이메일+비밀번호 (fitlog와 같은 방식) ── */
+// Supabase → Project Settings → API의 Project URL과 anon public 키.
+// 공개용 값이라 앱에 넣어도 된다 — 데이터는 RLS가 "로그인한 본인 행"만 허용한다.
+// 비어 있으면 이 기기 설정의 "고급: Supabase 연결" 값을 쓴다.
+const SB_URL_BUILTIN="https://quhxrdjmvubtfddayewr.supabase.co";
+const SB_ANON_BUILTIN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF1aHhyZGptdnVidGZkZGF5ZXdyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODkyOTMwODcsImV4cCI6MjEwNDg2OTA4N30.DunIkfJ1LAqjk4ecxLqdmyOyjzcl52jNpLPAvD18jrQ";
+const AUTH_KEY="wealth:auth";
+function sbConf(){
+  return {url:(SB_URL_BUILTIN||S.settings.supabaseUrl||"").trim().replace(/\/rest\/v1\/?$/,"").replace(/\/+$/,""),
+          key:(SB_ANON_BUILTIN||S.settings.supabaseKey||"").trim()};
+}
+const readAuth=()=>{ try{ return JSON.parse(localStorage.getItem(AUTH_KEY)||"null"); }catch(e){ return null; } };
+const signedIn=()=>!!readAuth()?.refresh_token;
+function storeAuth(d){
+  const a={access_token:d.access_token,refresh_token:d.refresh_token,
+    expires_at:d.expires_at||Math.floor(Date.now()/1000)+(d.expires_in||3600),user:{id:d.user?.id,email:d.user?.email}};
+  localStorage.setItem(AUTH_KEY,JSON.stringify(a));
+  return a;
+}
+async function authCall(path,body,token,method="POST"){
+  const c=sbConf();
+  if(!c.url||!c.key) throw new Error("Supabase 연결 정보가 없어요. 설정 → 계정의 '고급: Supabase 연결'에 한 번만 입력해 주세요.");
+  const headers={apikey:c.key,"Content-Type":"application/json"};
+  if(token) headers.Authorization=`Bearer ${token}`;
+  let r;
+  try{ r=await fetch(`${c.url}/auth/v1/${path}`,{method,headers,body:method==="GET"?undefined:JSON.stringify(body||{})}); }
+  catch(e){ throw new Error("인터넷 연결을 확인해 주세요."); }
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){
+    const m=d.msg||d.error_description||d.message||"";
+    const e=new Error(
+      r.status===429||/rate limit|security purposes/i.test(m)?"요청이 너무 잦아요. 잠시 뒤에 다시 시도해 주세요.":
+      /invalid login credentials/i.test(m)?"이메일 또는 비밀번호가 맞지 않거나, 아직 가입하지 않은 이메일이에요.":
+      /email not confirmed/i.test(m)?"가입 확인 메일의 링크를 먼저 눌러 주세요. 메일이 안 보이면 스팸함도 확인해 주세요.":
+      /already registered|already exists/i.test(m)?"이미 가입된 이메일이에요. 로그인을 눌러 주세요.":
+      /password/i.test(m)&&/least|short|weak/i.test(m)?"비밀번호는 6자 이상으로 정해 주세요.":
+      /invalid api key|no api key/i.test(m)?"Supabase anon 키가 맞지 않아요. '고급: Supabase 연결'을 확인해 주세요.":
+      (m||`로그인 요청 실패 (${r.status})`));
+    e.status=r.status; throw e;
+  }
+  return d;
+}
+const appUrl=()=>location.origin+location.pathname;
+async function signIn(email,pw){ return storeAuth(await authCall("token?grant_type=password",{email,password:pw})); }
+async function signUp(email,pw){
+  const d=await authCall(`signup?redirect_to=${encodeURIComponent(appUrl())}`,{email,password:pw});
+  if(d.access_token) return {session:storeAuth(d)};
+  // 이미 가입된 이메일이면 Supabase는 빈 identities를 돌려준다.
+  if(Array.isArray(d.identities)&&!d.identities.length) throw new Error("이미 가입된 이메일이에요. 로그인을 눌러 주세요.");
+  return {needsConfirm:true};
+}
+const requestReset=email=>authCall(`recover?redirect_to=${encodeURIComponent(appUrl())}`,{email});
+let refreshing=null;
+// 만료 1분 전이면 refresh 토큰으로 새로 받는다. 네트워크 오류로는 로그아웃시키지 않는다.
+async function getAccessToken(){
+  const a=readAuth(); if(!a?.refresh_token) return null;
+  if(a.access_token&&a.expires_at-60>Date.now()/1000) return a.access_token;
+  refreshing=refreshing||authCall("token?grant_type=refresh_token",{refresh_token:a.refresh_token}).then(storeAuth)
+    .catch(e=>{ if(e.status===400||e.status===401) localStorage.removeItem(AUTH_KEY); return null; })
+    .finally(()=>{ refreshing=null; });
+  return (await refreshing)?.access_token||null;
+}
+async function signOut(){
+  const t=await getAccessToken().catch(()=>null);
+  if(t) authCall("logout",{},t).catch(()=>{});
+  localStorage.removeItem(AUTH_KEY);
+}
+async function updatePassword(pw){
+  const t=await getAccessToken();
+  if(!t) throw new Error("로그인이 만료됐어요. 비밀번호 재설정 메일을 다시 받아 주세요.");
+  await authCall("user",{password:pw},t,"PUT");
+}
+// 가입 확인·비밀번호 재설정 메일의 링크(#access_token=…)로 들어왔을 때 로그인 처리.
+let recoveryMode=false;
+async function consumeAuthLink(){
+  const hash=location.hash.replace(/^#/,"");
+  if(!/access_token=|error_description=/.test(hash)) return;
+  history.replaceState(null,"",location.pathname+location.search);
+  const p=new URLSearchParams(hash);
+  if(p.get("error_description")){ notice="메일 링크가 만료됐거나 확인하지 못했어요. 다시 요청해 주세요."; return; }
+  try{
+    const tok=p.get("access_token"), user=await authCall("user",null,tok,"GET");
+    storeAuth({access_token:tok,refresh_token:p.get("refresh_token"),expires_at:+p.get("expires_at")||0,expires_in:+p.get("expires_in")||3600,user});
+    recoveryMode=p.get("type")==="recovery";
+    notice=recoveryMode?"새 비밀번호를 정해 주세요.":"이메일 확인이 끝났어요. 로그인됐어요.";
+    if(recoveryMode) tab="설정";
+  }catch(e){ notice="메일 링크로 로그인하지 못했어요. 이메일·비밀번호로 로그인해 주세요."; }
+}
+
+/* ── 계정 데이터: wealth_user_state (RLS로 로그인한 본인 행만 읽고 쓸 수 있다) ── */
+async function rest(method,path,body,extra={}){
+  const c=sbConf(), jwt=await getAccessToken();
+  if(!jwt) throw new Error("로그인이 만료됐어요. 다시 로그인해 주세요.");
+  const r=await fetch(`${c.url}/rest/v1/${path}`,{method,headers:{apikey:c.key,Authorization:`Bearer ${jwt}`,"Content-Type":"application/json",...extra},body:body==null?undefined:JSON.stringify(body)});
+  if(!r.ok){
+    let m=""; try{ m=(await r.json()).message||""; }catch(e){}
+    if(/does not exist|could not find the table/i.test(m)||r.status===404) throw new Error("wealth_user_state 테이블이 없어요. Supabase에서 설정 SQL을 먼저 실행해 주세요.");
+    throw new Error(m||`동기화 요청 실패 (${r.status})`);
+  }
+  return r;
+}
+async function cloudRead(){ const rows=await (await rest("GET","wealth_user_state?select=data,updated_at&limit=1")).json(); return rows[0]||null; }
+async function cloudWrite(data,at){
+  await rest("POST","wealth_user_state?on_conflict=user_id",[{user_id:readAuth().user.id,data,updated_at:at}],{Prefer:"resolution=merge-duplicates,return=minimal"});
+}
+
 // 충돌 상태에서는 자동 업로드를 멈춰, 사용자가 고르기 전에 어느 쪽도 덮어쓰지 않는다.
-function sbReady(){ return sb && (S.settings.syncCode||"").trim() && !window.__conflict; }
+function sbReady(){ return signedIn()&&!window.__conflict; }
 async function commit(){
   touchNetWorthSnapshot();
   await saveLocal(S);
@@ -422,32 +529,14 @@ async function commit(){
     render();
   }
 }
-
-/* ── Supabase 동기화 (동기화 코드 방식, 로그인 없음) ── */
-function sbLoadScript(){
-  return new Promise((resolve,reject)=>{
-    if(typeof window.supabase!=="undefined"&&window.supabase.createClient){ resolve(); return; }
-    const s=document.createElement("script");
-    s.src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js";
-    s.onload=resolve; s.onerror=()=>reject(new Error("script"));
-    document.head.appendChild(s);
-  });
-}
-async function sbInit(){
-  const url=(S.settings.supabaseUrl||"").trim(), key=(S.settings.supabaseKey||"").trim();
-  if(!url||!key){ sb=null; return false; }
-  try{ await sbLoadScript(); sb=window.supabase.createClient(url,key); return true; }
-  catch(e){ sb=null; notice="Supabase 스크립트를 불러오지 못했습니다. 네트워크를 확인해 주세요."; return false; }
-}
 async function sbSave(){
   if(!sbReady()) return;
   syncState={status:"syncing",error:""};
-  const code=S.settings.syncCode.trim();
   const syncedAt=new Date().toISOString();
   const settings={...S.settings}; LOCAL_ONLY.forEach(k=>delete settings[k]);
   const payload={...S,settings,meta:{...(S.meta||{}),lastSync:syncedAt}};
-  const { error } = await sb.from("wealth_data").upsert({ id:code, data:payload, updated_at:syncedAt });
-  if(error){ syncState={status:"error",error:error.message||"동기화 실패"}; throw error; }
+  try{ await cloudWrite(payload,syncedAt); }
+  catch(e){ syncState={status:"error",error:e.message||"동기화 실패"}; throw e; }
   // 업로드 도중 새로 저장된 변경이 있을 수 있으니 meta를 통째로 바꾸지 않고 lastSync만 올린다.
   S.meta={...(S.meta||{}),lastSync:syncedAt};
   syncState={status:"synced",error:""};
@@ -461,42 +550,75 @@ function adoptServer(row){
   S.meta={...(S.meta||{}),lastSync:row.updated_at||new Date().toISOString()};
 }
 async function sbPull(opts={}){
-  if(!sb){ const ok=await sbInit(); if(!ok){ notice="설정에서 Supabase URL과 anon key를 먼저 입력해 주세요."; return render(); } }
-  const code=(S.settings.syncCode||"").trim();
-  if(!code){ notice="동기화 코드를 먼저 정해서 입력해 주세요."; return render(); }
-  if(opts.manual&&isDirty()&&!confirm("이 기기에 아직 Supabase로 올라가지 못한 변경이 있어요.\nSupabase 데이터로 덮어쓰면 그 변경은 사라집니다. 계속할까요?")) return;
+  if(!signedIn()){ if(opts.manual){ notice="먼저 로그인해 주세요."; render(); } return; }
+  if(opts.manual&&isDirty()&&!confirm("이 기기에 아직 계정으로 올라가지 못한 변경이 있어요.\n계정 데이터로 덮어쓰면 그 변경은 사라집니다. 계속할까요?")) return;
   busy.sync=true; syncState={status:"syncing",error:""}; render();
   try{
-    const { data, error } = await sb.from("wealth_data").select("data,updated_at").eq("id",code).maybeSingle();
-    if(error) throw error;
+    const data=await cloudRead();
     if(data&&data.data){
+      window.__needImport=false;
       const serverChanged=ts(data.updated_at)>ts(S.meta?.lastSync);
       if(!opts.manual&&!opts.force&&isDirty()){
         // 앱을 열었는데 이 기기에 못 올린 변경이 있는 경우: 서버가 그대로면 올리고, 서버도 바뀌었으면 사용자에게 묻는다.
-        if(!serverChanged){ await sbSave(); notice="지난번에 올리지 못한 변경을 Supabase에 올렸습니다."; }
+        if(!serverChanged){ await sbSave(); notice="지난번에 올리지 못한 변경을 계정에 올렸습니다."; }
         else { window.__conflict=true; syncState={status:"conflict",error:""}; }
       }else{
         window.__conflict=false;
         adoptServer(data); touchNetWorthSnapshot(); await saveLocal(S,false);
         syncState={status:"synced",error:""};
-        if(opts.manual||opts.force) notice="Supabase에서 데이터를 불러왔습니다.";
+        if(opts.manual||opts.force) notice="계정에서 데이터를 불러왔습니다.";
       }
+    }else if(S.tx.length||S.stocks.length){
+      await sbSave(); notice="이 기기의 기록을 계정에 올렸어요. 이제 다른 기기에서도 로그인하면 보여요.";
+    }else{
+      // 계정도 비어 있고 이 기기에도 기록이 없으면, 예전 동기화 코드에서 옮겨오도록 안내한다.
+      window.__needImport=true; syncState={status:"synced",error:""};
     }
-    else { await sbSave(); notice="이 코드로 처음 연결했습니다. 이 기기의 데이터를 올렸어요."; }
   }catch(e){ syncState={status:"error",error:e.message||"동기화 실패"}; notice="동기화 중 문제가 생겼습니다: "+(e.message||""); }
   busy.sync=false; render();
 }
 async function sbPush(){
-  if(!sb){ const ok=await sbInit(); if(!ok){ notice="설정에서 Supabase URL과 anon key를 먼저 입력해 주세요."; return render(); } }
-  const code=(S.settings.syncCode||"").trim();
-  if(!code){ notice="동기화 코드를 먼저 정해서 입력해 주세요."; return render(); }
+  if(!signedIn()){ notice="먼저 로그인해 주세요."; return render(); }
   window.__conflict=false;
-  try{ await sbSave(); notice="Supabase에 올렸습니다."; }
+  try{ await sbSave(); notice="계정에 올렸습니다."; }
   catch(e){ notice="업로드에 실패했습니다: "+(e.message||""); }
   render();
 }
-
-
+// 예전 "동기화 코드" 방식(wealth_data 표)에 있던 기록을 로그인한 계정으로 한 번 옮긴다.
+async function importLegacy(code){
+  const c=sbConf();
+  const r=await fetch(`${c.url}/rest/v1/wealth_data?id=eq.${encodeURIComponent(code)}&select=data,updated_at`,{headers:{apikey:c.key,Authorization:`Bearer ${c.key}`}});
+  if(!r.ok) throw new Error(`예전 데이터를 읽지 못했어요 (${r.status})`);
+  const rows=await r.json();
+  if(!rows.length||!rows[0].data) throw new Error("그 동기화 코드로 저장된 데이터가 없어요. 코드를 다시 확인해 주세요.");
+  adoptServer(rows[0]); touchNetWorthSnapshot();
+  window.__conflict=false; window.__needImport=false;
+  await saveLocal(S); await sbSave();
+}
+// 설정 → 계정 카드
+function accountCard(){
+  const c=sbConf(), builtin=!!(SB_URL_BUILTIN&&SB_ANON_BUILTIN);
+  const adv=builtin?"":`<details style="margin-top:12px"${!c.url||!c.key?" open":""}><summary class="faint" style="cursor:pointer">고급: Supabase 연결</summary>
+    <div class="field" style="margin-top:8px"><div class="lbl">Supabase URL</div><input type="text" data-set="supabaseUrl" value="${esc(S.settings.supabaseUrl)}" placeholder="https://xxxxx.supabase.co"></div>
+    <div class="field"><div class="lbl">anon public 키</div><input type="password" autocomplete="off" data-set="supabaseKey" value="${esc(S.settings.supabaseKey)}" placeholder="eyJhbGci..."></div>
+    <div class="faint">한 번만 넣으면 돼요. 앱에 이 값을 넣어두면 이 칸은 사라집니다.</div></details>`;
+  if(recoveryMode&&signedIn()) return `<div class="lbl">새 비밀번호</div><input type="password" id="newPw" autocomplete="new-password" placeholder="6자 이상">
+    <div class="btnrow" style="margin-top:10px"><button class="btn" id="newPwSave" ${busy.auth?"disabled":""}>비밀번호 바꾸기</button></div>`;
+  if(signedIn()){
+    const a=readAuth();
+    return `<div class="rowline"><div><div class="lbl" style="margin:0">로그인됨</div><strong>${esc(a.user?.email||"")}</strong></div><button class="btn ghost tiny" id="authLogout">로그아웃</button></div>
+      <div class="note ${syncState.status==="error"?"err":"info"}" style="margin:12px 0">${syncState.status==="error"?`동기화 실패: ${esc(syncState.error)}`:S.meta?.lastSync?`계정 동기화: ${savedTime(S.meta.lastSync)}`:"아직 동기화 기록이 없어요."}</div>
+      <div class="btnrow"><button class="btn ghost tiny" id="sbpull" ${busy.sync?"disabled":""}>${spin(busy.sync,busy.sync?"불러오는 중…":"계정에서 불러오기")}</button><button class="btn ghost tiny" id="sbpush">지금 올리기</button></div>
+      <details style="margin-top:14px"${window.__needImport?" open":""}><summary class="faint" style="cursor:pointer">예전 동기화 코드에서 기록 옮겨오기</summary>
+        <div class="faint" style="margin:8px 0">로그인 방식 전에 쓰던 동기화 코드를 넣으면, 그때 기록을 이 계정으로 한 번 옮겨요.</div>
+        <div class="rowline" style="gap:8px"><input type="password" id="legacyCode" autocomplete="off" placeholder="예전 동기화 코드" value="${esc(S.settings.syncCode||"")}"><button class="btn tiny" id="importLegacy" style="flex:0 0 auto" ${busy.auth?"disabled":""}>옮겨오기</button></div>
+      </details>${adv}`;
+  }
+  return `<div class="faint" style="margin-bottom:10px">로그인하면 폰을 바꾸거나 홈 화면 아이콘을 새로 추가해도 기록이 그대로 보여요. 한 번 로그인하면 이 기기에서는 계속 로그인돼 있어요.</div>
+    <div class="field"><div class="lbl">이메일</div><input type="email" id="authEmail" autocomplete="username" placeholder="name@example.com" value="${esc(window.__authEmail||"")}"></div>
+    <div class="field"><div class="lbl">비밀번호</div><input type="password" id="authPw" autocomplete="current-password" placeholder="6자 이상"></div>
+    <div class="btnrow"><button class="btn" id="authLogin" ${busy.auth?"disabled":""}>${spin(busy.auth,busy.auth?"확인 중…":"로그인")}</button><button class="btn ghost" id="authSignup" ${busy.auth?"disabled":""}>회원가입</button><button class="btn ghost tiny" id="authReset">비밀번호 찾기</button></div>${adv}`;
+}
 
 /* ══════════════ AI 호출 ══════════════ */
 const DEFAULT_CHAIN="gemini-flash-latest,gemini-2.5-flash,gemini-2.5-flash-lite";
@@ -614,7 +736,7 @@ function savedTime(v){
   return `${same?"오늘":`${d.getMonth()+1}.${d.getDate()}`} ${d.toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})}`;
 }
 function syncStrip(){
-  const configured=!!(S.settings.supabaseUrl&&S.settings.supabaseKey&&S.settings.syncCode);
+  const configured=signedIn();
   if(window.__conflict) return `<div class="note warn" style="margin:-6px 0 16px"><b>동기화 확인이 필요해요</b><br>이 기기에 올리지 못한 변경이 있는데, 그사이 다른 기기(또는 자동 시세 갱신)에서도 Supabase 데이터가 바뀌었어요. 어느 쪽을 남길지 골라 주세요. 고르기 전까지는 자동 동기화를 멈춰 둡니다.
     <div class="btnrow" style="margin-top:10px"><button class="btn tiny" id="keepLocal">이 기기 내용 올리기</button><button class="btn ghost tiny" id="takeServer">Supabase 내용 불러오기</button></div></div>`;
   if(syncState.status==="syncing") return `<div class="sync-strip"><i class="sync-dot work"></i>Supabase에 저장 중…</div>`;
@@ -934,6 +1056,8 @@ function render(){
 
   /* ───── 홈 ───── */
   if(tab==="홈"){
+    if(!signedIn()) h+=`<div class="budget-card"><div class="rowline" style="gap:12px"><div><strong>로그인하고 기록 지키기</strong><div class="faint" style="margin-top:5px">로그인하면 폰을 바꾸거나 앱을 다시 설치해도 기록이 그대로 보여요.</div></div><button class="edit-pill" data-openaccount style="flex:0 0 auto">로그인</button></div></div>`;
+    else if(window.__needImport) h+=`<div class="note info">계정에 저장된 기록이 아직 없어요. 예전 동기화 코드를 쓰셨다면 <b>설정 → 계정</b>에서 옮겨올 수 있어요. <button class="btn tiny" data-openaccount style="margin-top:8px">옮겨오기</button></div>`;
     h+=`<div class="quick-grid" style="margin-top:0">
       <button class="quick-btn expense" data-quick="expense"><b>− 지출</b>빠르게 기록하기</button>
       <button class="quick-btn income" data-quick="income"><b>＋ 수입</b>빠르게 기록하기</button>
@@ -1297,21 +1421,8 @@ function render(){
       <div class="field"><input type="text" data-prof="goal" value="${esc(S.profile.goal)}"></div>
       <select data-prof="risk">${["안정형","중립형","공격형"].map(r=>`<option${r===S.profile.risk?" selected":""}>${r}</option>`).join("")}</select></div>
 
-    <div class="sec">기기 간 동기화 (Supabase)</div>
-    <div class="card">
-      <div class="faint" style="margin-bottom:9px">로그인 없이, 본인이 정한 <b>동기화 코드</b> 하나로 기기를 묶습니다. 이메일 인증보다 보안은 약하니, 아무한테도 알려주지 않을 코드를 정해 주세요. (예: 임의의 영문+숫자 조합)<br>AI 키와 아래 세 값은 동기화되지 않으니, 기기마다 한 번씩 입력해 주세요.</div>
-      <div class="field"><div class="lbl">Supabase URL</div>
-        <input type="text" data-set="supabaseUrl" value="${esc(S.settings.supabaseUrl)}" placeholder="https://xxxxx.supabase.co"></div>
-      <div class="field"><div class="lbl">Supabase anon key</div>
-        <input type="password" data-set="supabaseKey" value="${esc(S.settings.supabaseKey)}" placeholder="eyJhbGci..."></div>
-      <div class="field"><div class="lbl">동기화 코드</div>
-        <input type="password" data-set="syncCode" value="${esc(S.settings.syncCode)}" placeholder="예: mj-wealth-7public"></div>
-      <div class="btnrow">
-        <button class="btn ghost" id="sbpull" ${busy.sync?"disabled":""}>${spin(busy.sync,busy.sync?"불러오는 중…":"이 코드로 불러오기")}</button>
-        <button class="btn ghost" id="sbpush">지금 올리기</button>
-      </div>
-      <div class="note ${syncState.status==="error"?'err':'info'}" style="margin:12px 0 0">${S.meta?.lastLocalSave?`이 기기 저장: ${savedTime(S.meta.lastLocalSave)}`:'아직 저장 기록이 없습니다.'}${S.meta?.lastSync?`<br>Supabase 동기화: ${savedTime(S.meta.lastSync)}`:'<br>Supabase 동기화 기록 없음'}</div>
-    </div>
+    <div class="sec" id="accountSec">계정 (기기 간 동기화)</div>
+    <div class="card">${accountCard()}</div>
 
     <div class="sec">화면 모드</div>
     <div class="flow-switch theme-switch" role="tablist" aria-label="화면 모드">
@@ -1501,6 +1612,43 @@ function bind(){
   };
   // 화면 모드
   $$("[data-themeset]").forEach(el=>el.onclick=async()=>{S.settings.theme=el.dataset.themeset;await commit()});
+  // 계정 (로그인)
+  $$("[data-openaccount]").forEach(b=>b.onclick=()=>{tab="설정";render();setTimeout(()=>document.querySelector("#accountSec")?.scrollIntoView({behavior:"smooth"}),0)});
+  // 입력값은 화면을 다시 그리기 전에 먼저 읽어 둔다 (render가 입력칸을 새로 만들기 때문).
+  const authRun=async(fn)=>{
+    const v={email:($("#authEmail")?.value||"").trim(),pw:$("#authPw")?.value||"",legacy:($("#legacyCode")?.value||"").trim(),newPw:$("#newPw")?.value||""};
+    window.__authEmail=v.email||window.__authEmail;
+    busy.auth=true; notice=""; render();
+    try{ await fn(v); }catch(e){ notice=e.message||"요청에 실패했어요."; }
+    busy.auth=false; render();
+  };
+  if($("#authLogin")) $("#authLogin").onclick=()=>authRun(async({email,pw})=>{
+    if(!email||!pw) throw new Error("이메일과 비밀번호를 입력해 주세요.");
+    await signIn(email,pw); notice="로그인됐어요."; busy.auth=false; await sbPull();
+  });
+  if($("#authSignup")) $("#authSignup").onclick=()=>authRun(async({email,pw})=>{
+    if(!email||pw.length<6) throw new Error("이메일과 6자 이상 비밀번호를 입력해 주세요.");
+    const r=await signUp(email,pw);
+    if(r.needsConfirm) notice=`${email}로 확인 메일을 보냈어요. 메일의 링크를 누르면 로그인돼요.`;
+    else { notice="가입하고 로그인됐어요."; busy.auth=false; await sbPull(); }
+  });
+  if($("#authReset")) $("#authReset").onclick=()=>authRun(async({email})=>{
+    if(!email) throw new Error("비밀번호를 찾을 이메일을 입력해 주세요.");
+    await requestReset(email); notice=`${email}로 비밀번호 재설정 메일을 보냈어요.`;
+  });
+  if($("#authLogout")) $("#authLogout").onclick=async()=>{
+    if(!confirm("로그아웃할까요? 이 기기의 기록은 그대로 남아요.")) return;
+    await signOut(); window.__conflict=false; syncState={status:"local",error:""}; notice="로그아웃했어요."; render();
+  };
+  if($("#newPwSave")) $("#newPwSave").onclick=()=>authRun(async({newPw:pw})=>{
+    if(pw.length<6) throw new Error("비밀번호는 6자 이상으로 정해 주세요.");
+    await updatePassword(pw); recoveryMode=false; notice="비밀번호를 바꿨어요.";
+  });
+  if($("#importLegacy")) $("#importLegacy").onclick=()=>authRun(async({legacy:code})=>{
+    if(!code) throw new Error("예전 동기화 코드를 입력해 주세요.");
+    if((S.tx.length||S.stocks.length)&&!confirm("지금 이 기기·계정의 기록을 예전 코드의 기록으로 바꿀까요?")) return;
+    await importLegacy(code); notice="예전 기록을 이 계정으로 옮겼어요.";
+  });
   $$("[data-prof]").forEach(el=>el.onchange=async()=>{S.profile[el.dataset.prof]=el.value;await commit()});
   $$("[data-set]").forEach(el=>{
     const flush=async(rerender)=>{
@@ -1508,7 +1656,6 @@ function bind(){
       S.settings[k]=el.value.trim();
       await saveLocal(S);
       if(sbReady()) sbSave().catch(()=>{});
-      if(k==="supabaseUrl"||k==="supabaseKey"){ sb=null; await sbInit(); }
       if(rerender) render();
     };
     el.oninput=()=>{ clearTimeout(el.__t); el.__t=setTimeout(()=>flush(false),500); };
@@ -1739,7 +1886,8 @@ function migrateOnce(){
   const snapshotChanged=touchNetWorthSnapshot();
   if(changed||snapshotChanged) await saveLocal(S,false);
   render();
-  if(S.settings.supabaseUrl&&S.settings.supabaseKey&&S.settings.syncCode){ await sbPull(); }
+  await consumeAuthLink();
+  if(signedIn()) await sbPull(); else render();
   const added=applyRecurring();
   if(added){ notice=`매달 반복 항목 ${added}건을 자동으로 기록했어요.`; await commit(); }
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{ if((S.settings.theme||"auto")==="auto") render(); });
