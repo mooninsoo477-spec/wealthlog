@@ -271,6 +271,19 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 .ms-cell{background:var(--surface2);border-radius:12px;padding:10px 12px}
 .ms-val{font-size:16px;font-weight:800;letter-spacing:-.02em;margin-top:2px}
 .theme-switch{grid-template-columns:1fr 1fr 1fr;margin:0}
+.link-btn{border:0;background:transparent;color:var(--accent);font-weight:700;font-size:13px;padding:12px 0 2px;text-align:left}
+.calc-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+.calc-flow .rowline{padding:5px 0;font-size:13.5px}
+.calc-total{border-top:1px solid var(--line);margin-top:4px;padding-top:9px!important;font-weight:800}
+.calc-result{background:var(--accent-soft);border-radius:14px;padding:14px;margin:12px 0 6px}
+.calc-result .big{font-size:24px;font-weight:850;letter-spacing:-.03em;color:var(--accent);margin-top:2px}
+.health-row{display:flex;gap:10px;align-items:flex-start;padding:11px 0;border-top:1px solid var(--line2)}
+.health-row:first-of-type{border-top:0;margin-top:6px}
+.health-badge{flex:0 0 auto;font-size:11px;font-weight:800;padding:3px 8px;border-radius:7px;margin-top:1px}
+.health-badge.ok{background:#E3F7EE;color:#00774F}.health-badge.warn{background:#FFF3DB;color:#8A5A00}.health-badge.bad{background:#FFE8EA;color:#B4232F}
+:root[data-theme="dark"] .health-badge.ok{background:#123326;color:#5FD3A1}
+:root[data-theme="dark"] .health-badge.warn{background:#3A2F17;color:#F5C76B}
+:root[data-theme="dark"] .health-badge.bad{background:#3D1F1F;color:#F2A3A3}
 @media(max-width:380px){.hero-copy{max-width:78%}.mascot{width:88px;height:88px;right:8px}.tabs button{font-size:11.5px}.entry .cat{display:none}}
 </style>
 </head>
@@ -366,6 +379,9 @@ const DEFAULT={
   targets:[{id:uid(),stage:1,name:"1단계 — 미정",price:1500000000,years:5},
            {id:uid(),stage:2,name:"2단계 — 목동",price:3000000000,years:10}],
   budgets:{monthlyTotal:0,categories:{}},
+  contribs:[],
+  taxPlan:{isaLimit:20000000,pensionLimit:6000000,creditRate:13.2},
+  plan:{sellPrice:null,sellCost:null,extraCash:null,loan:500000000,rate:4,years:30,buyCostPct:3.5,payParents:false},
   recurring:[],
   netWorthHistory:[],
   reports:{weekly:[],monthly:[],realEstate:[],stocks:[]},
@@ -375,7 +391,7 @@ const DEFAULT={
     supabaseUrl:"",supabaseKey:"",syncCode:"",theme:"auto"}
 };
 let S=JSON.parse(JSON.stringify(DEFAULT));
-let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false;
+let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false, contribFormOpen=false;
 let syncState={status:"local",error:""};
 
 /* ══════════════ 저장소 (Claude storage → localStorage → Google Drive) ══════════════ */
@@ -818,6 +834,10 @@ function checkCard(c,pace){
   if(fp) rows.push([fp.thisMonth>=fp.need?"ok":"info",`부모님 상환 이번 달 ${won(fp.thisMonth)}원 / 목표 ${won(fp.need)}원 <span class="faint">(${fp.monthsLeft}개월 남음)</span>`]);
   else if(repaid) rows.push(["info",`이번 달 부모님 상환 ${won(repaid)}원 · 남은 차입금 ${uk(c.familyDebt)}`]);
   if(pace) rows.push(["info",`순자산이 한 달에 약 ${won(Math.abs(pace.v))}원씩 ${pace.v>=0?"늘고":"줄고"} 있어요 <span class="faint">(${pace.basis} 기준)</span>`]);
+  if(+m.slice(5,7)>=10){
+    const tp=taxPlan(), left=Math.max(0,tp.pensionLimit-contribYearSum("연금저축"));
+    if(left) rows.push(["warn",`연금저축 세액공제 한도까지 ${korWon(left)} 남음 <span class="faint">(12월 31일 납입분까지, 다 채우면 약 ${won(Math.round(left*tp.creditRate/100))}원 더 돌려받아요)</span>`]);
+  }
   if(!rows.length) return `<div class="card"><strong>이번 달 점검</strong><div class="faint" style="margin-top:6px">기록이 쌓이면 저축률, 지출 변화, 예산 상태를 여기서 보여드려요.</div></div>`;
   return `<div class="card"><strong>이번 달 점검</strong>${rows.map(([k,t])=>`<div class="check-row"><i class="check-dot ${k}"></i><span>${t}</span></div>`).join("")}</div>`;
 }
@@ -883,6 +903,7 @@ function monthSummary(ymS){
       ${cell("수입",korWon(inc),"var(--up)")}${cell("지출",korWon(a.expense),"var(--down)")}
       ${cell("남은 돈",(save>=0?"+":"")+korWon(save),save>=0?"var(--up)":"var(--down)")}${cell("저축률",inc?Math.round(save/inc*100)+"%":"-")}
     </div>
+    ${(()=>{const fs2=fixedSplit(ymS);return fs2.fixed?`<div class="check-row"><i class="check-dot info"></i><span>고정비 ${korWon(fs2.fixed)} · 변동비 ${korWon(fs2.variable)}</span></div>`:"";})()}
     ${top?`<div class="check-row"><i class="check-dot warn"></i><span>가장 많이 쓴 곳 <b>${esc(top[0])}</b> ${won(top[1])}원</span></div>`:""}
     ${repaid?`<div class="check-row"><i class="check-dot info"></i><span>부모님 상환 ${won(repaid)}원</span></div>`:""}
     ${nwDiff!=null?`<div class="check-row"><i class="check-dot ${nwDiff>=0?"ok":"bad"}"></i><span>순자산 ${nwDiff>=0?"+":"−"}${korWon(Math.abs(nwDiff))} (지난달 대비)</span></div>`:""}
@@ -897,6 +918,7 @@ function txEditForm(t){
       <label class="tx-flag"><input type="checkbox" id="etPc" ${t.parentCard?"checked":""}>부모님 카드</label>
       <label class="tx-flag"><input type="checkbox" id="etFr" ${t.famRepay?"checked":""}>부모님 상환</label>
       <label class="tx-flag"><input type="checkbox" id="etSi" ${t.sideIncome?"checked":""}>부수입</label>
+      <label class="tx-flag"><input type="checkbox" id="etFx" ${isFixed(t)?"checked":""}>고정비</label>
     </div>
     <div class="btnrow"><button class="btn tiny" data-txsave="${t.id}">저장</button><button class="btn ghost tiny" data-txcancel>취소</button>${t.recurring?"":`<button class="btn ghost tiny" data-txrec="${t.id}">매달 반복으로 등록</button>`}</div>
   </div>`;
@@ -918,11 +940,117 @@ function simText(left,pace,extra,years){
   if(extra&&base!=null) s+=` <span class="faint">(지금보다 ${fmtYM(base-now)} 빨라짐)</span>`;
   return s+` · 목표 ${years}년${now<=years*12?" 안에 도달":"보다 늦음"}`;
 }
+// 최근 3개월(이번 달 제외) 월평균 수입·지출·부모님 상환. 기록이 있는 달만 평균 낸다.
+function avgMonthly(){
+  const rows=recentMonths(4).slice(0,3).map(m=>({...monthAgg(m),fam:S.tx.filter(t=>t.famRepay&&ym(t.date)===m).reduce((s,t)=>s+t.amount,0)}))
+    .filter(a=>a.base+a.side+a.expense>0);
+  if(!rows.length) return null;
+  const avg=k=>rows.reduce((s,a)=>s+a[k],0)/rows.length;
+  return {inc:avg("base")+avg("side"),exp:avg("expense"),fam:avg("fam"),months:rows.length};
+}
+// 비상금으로 셀 자산: 이름에 현금·예금 등이 들어간 기타 자산 (청약·공제회처럼 바로 못 쓰는 돈은 제외).
+const LIQUID=/현금|예금|적금|CMA|파킹|통장|MMF/i;
+// 재무 건강: 좋음/주의/위험을 색과 글자로 함께 표시한다.
+function healthCard(c){
+  const a=avgMonthly(), rows=[], label={ok:"좋음",warn:"주의",bad:"위험"};
+  const up=(v,good,warn)=>v>=good?"ok":v>=warn?"warn":"bad", down=(v,good,warn)=>v<=good?"ok":v<=warn?"warn":"bad";
+  const liquid=S.others.filter(o=>LIQUID.test(o.name)).reduce((s,o)=>s+o.amount,0);
+  const monthlyExp=a?a.exp:(+(S.budgets&&S.budgets.monthlyTotal)||0);
+  if(monthlyExp){ const m=liquid/monthlyExp; rows.push([up(m,6,3),"비상금",`${m.toFixed(1)}개월 치`,`바로 쓸 수 있는 돈 ${korWon(liquid)} ÷ 월 생활비 ${korWon(monthlyExp)} · 3~6개월 치 이상이면 안전해요`]); }
+  if(a&&a.inc){ const r=(a.inc-a.exp)/a.inc*100; rows.push([up(r,30,15),"저축률",`${Math.round(r)}%`,`최근 ${a.months}개월 평균 · 30% 이상이면 좋아요`]); }
+  const loanPay=(c.ls.nextAmount||0)+(a?a.fam:0);
+  if(a&&a.inc&&loanPay){ const r=loanPay/a.inc*100; rows.push([down(r,30,40),"대출 상환 부담",`월 소득의 ${Math.round(r)}%`,`은행 ${won(c.ls.nextAmount||0)}원${a.fam?` + 부모님 ${won(Math.round(a.fam))}원`:""} · 40%를 넘으면 빠듯해요`]); }
+  if(c.re){ const r=c.bankDebt/c.re*100; rows.push([down(r,40,60),"집값 대비 대출",`${Math.round(r)}%`,`은행 대출 ${korWon(c.bankDebt)} ÷ 집값 ${korWon(c.re)} · 40% 이하면 여유 있어요`]); }
+  if(!rows.length) return `<div class="card"><strong>재무 건강</strong><div class="faint" style="margin-top:6px">가계부 기록이 한두 달 쌓이면 비상금·저축률·대출 부담을 보여드려요.</div></div>`;
+  return `<div class="card"><strong>재무 건강</strong>${rows.map(([g,name,val,desc])=>`<div class="health-row"><span class="health-badge ${g}">${label[g]}</span><div style="flex:1;min-width:0"><div class="rowline"><span style="font-weight:700">${name}</span><b>${val}</b></div><div class="faint">${desc}</div></div></div>`).join("")}
+    ${S.others.some(o=>LIQUID.test(o.name))?"":`<div class="faint" style="margin-top:8px">비상금은 기타 자산 중 이름에 "현금·예금·적금·통장"이 들어간 항목만 셉니다.</div>`}</div>`;
+}
+// 갈아타기 계산기: 지금 집을 팔고 새 집을 산다면 얼마짜리까지 가능한지.
+function swapCalc(c){
+  const P={...DEFAULT.plan,...(S.plan||{})};
+  const sell=P.sellPrice||c.re, autoCost=Math.round(sell*0.005);
+  const liquid=S.others.filter(o=>LIQUID.test(o.name)).reduce((s,o)=>s+o.amount,0);
+  const sellCost=P.sellCost!=null?P.sellCost:autoCost, extra=P.extraCash!=null?P.extraCash:liquid;
+  const fam=P.payParents?c.familyDebt:0;
+  const cash=sell-sellCost-c.bankDebt-fam+extra, loan=P.loan||0;
+  const maxPrice=Math.max(0,Math.floor((cash+loan)/(1+P.buyCostPct/100)/1e6)*1e6);
+  const r=P.rate/1200, n=P.years*12;
+  const pay=!loan||!n?0:r?Math.round(loan*r/(1-Math.pow(1+r,-n))):Math.round(loan/n);
+  const a=avgMonthly(), ratio=a&&a.inc&&pay?pay/a.inc*100:null;
+  const fld=(k,l,v,ph)=>`<label><div class="lbl">${l}</div><input type="text" class="amt" inputmode="decimal" data-plan="${k}" value="${v}" placeholder="${ph}"></label>`;
+  const row=(l,v,sign)=>`<div class="rowline"><span class="muted">${l}</span><span>${sign}${korWon(Math.abs(v))}</span></div>`;
+  return `<div class="card" id="swapCalc"><div class="rowline"><strong>갈아타기 계산기</strong><span class="faint">지금 팔고 산다면</span></div>
+    <div class="calc-grid">
+      ${fld("sellPrice","지금 집 매도가",P.sellPrice?won(P.sellPrice):"",won(c.re))}
+      ${fld("sellCost","매도 비용 (중개·세금)",P.sellCost!=null?won(P.sellCost):"",won(autoCost))}
+      ${fld("extraCash","추가로 넣을 돈 (예금 등)",P.extraCash!=null?won(P.extraCash):"",won(liquid))}
+      ${fld("loan","새 집 대출",P.loan?won(P.loan):"","500,000,000")}
+      ${fld("rate","대출 금리 (%)",P.rate,"4")}
+      ${fld("years","대출 기간 (년)",P.years,"30")}
+      ${fld("buyCostPct","취득 비용 (%)",P.buyCostPct,"3.5")}
+      <label class="tx-flag" style="align-self:end;padding-bottom:10px"><input type="checkbox" data-plan-check="payParents" ${P.payParents?"checked":""}>부모님 차입금도 갚기</label>
+    </div>
+    <div class="calc-flow">
+      ${row("매도가",sell,"+")}${row("매도 비용",sellCost,"−")}${row("은행 대출 상환",c.bankDebt,"−")}${P.payParents?row("부모님 차입금 상환",fam,"−"):""}${row("추가로 넣을 돈",extra,"+")}
+      <div class="rowline calc-total"><span>손에 쥐는 돈</span><span>${cash<0?"−":""}${korWon(Math.abs(cash))}</span></div>
+      ${row("새 집 대출",loan,"+")}
+    </div>
+    <div class="calc-result"><div class="lbl" style="margin:0">살 수 있는 집 (취득 비용 ${P.buyCostPct}% 빼고)</div><div class="big">약 ${korWon(maxPrice)}</div>
+      ${pay?`<div class="faint" style="margin-top:4px">월 상환 약 ${won(pay)}원${ratio!=null?` · 월 소득의 ${Math.round(ratio)}% ${ratio<=30?"(괜찮아요)":ratio<=40?"(빠듯해요)":"(무리예요)"}`:""}</div>`:""}
+    </div>
+    ${goalList().map(t=>{const ok=maxPrice>=t.price;return `<div class="check-row"><i class="check-dot ${ok?"ok":"warn"}"></i><span>${esc(t.name)} (${korWon(t.price)}) · ${ok?"지금 조건으로 가능":`${korWon(t.price-maxPrice)} 부족`}</span></div>`;}).join("")}
+    <div class="faint" style="margin-top:10px">빈칸은 앱에 있는 값(시세, 기타 자산 등)을 자동으로 씁니다. 양도세(1주택 비과세 요건), 취득세, 대출 한도(DSR·LTV)는 실제와 다를 수 있으니 큰 결정 전에는 은행·세무 상담으로 확인하세요.</div>
+  </div>`;
+}
+// 고정비: "매달 반복"으로 들어간 기록이거나 직접 고정비로 표시한 지출. 직접 바꾼 값(fixed)이 있으면 그걸 따른다.
+const isFixed=t=>t.type==="expense"&&(t.fixed!==undefined?!!t.fixed:!!t.recurring);
+function fixedSplit(ymS){
+  const ex=S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&ym(t.date)===ymS);
+  const fixed=ex.filter(isFixed).reduce((s,t)=>s+t.amount,0);
+  return {fixed,variable:ex.reduce((s,t)=>s+t.amount,0)-fixed};
+}
+// ISA·연금저축 올해 납입 진행률. 한도·공제율은 해마다 바뀔 수 있어 카드 안에서 고칠 수 있다.
+function taxPlan(){ return {...DEFAULT.taxPlan,...(S.taxPlan||{})}; }
+function contribYearSum(account){
+  const y=today().slice(0,4);
+  return (S.contribs||[]).filter(x=>x.account===account&&x.date.slice(0,4)===y).reduce((s,x)=>s+x.amount,0);
+}
+function contribCard(){
+  const tp=taxPlan(), y=today().slice(0,4), monthsLeft=12-(+today().slice(5,7))+1;
+  const row=(a,limit,extra)=>{
+    const v=contribYearSum(a), left=Math.max(0,limit-v), ac=acctColor(a);
+    return `<div style="padding:11px 0;border-top:1px solid var(--line2)">
+      <div class="rowline" style="margin-bottom:6px"><span style="display:flex;align-items:center;gap:6px"><i class="acct-dot" style="background:${ac.c}"></i><b>${a}</b></span><span class="faint">${korWon(v)} / ${korWon(limit)}</span></div>
+      ${bar(limit?v/limit*100:0,ac.c)}
+      <div class="faint" style="margin-top:5px">${left?`${korWon(left)} 남음 · 남은 ${monthsLeft}개월 동안 매달 약 ${won(Math.ceil(left/monthsLeft/1000)*1000)}원`:"올해 한도를 채웠어요"}${extra?` · ${extra(v)}`:""}</div>
+    </div>`;
+  };
+  const credit=v=>`세액공제 예상 ${won(Math.round(Math.min(v,tp.pensionLimit)*tp.creditRate/100))}원 (한도까지 넣으면 ${won(Math.round(tp.pensionLimit*tp.creditRate/100))}원)`;
+  const recent=(S.contribs||[]).filter(x=>x.date.slice(0,4)===y).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5);
+  return `<div class="card" id="contribCard"><div class="rowline"><strong>${y}년 ISA·연금 납입</strong><button class="edit-pill" data-contribform>${contribFormOpen?"닫기":"+ 납입 기록"}</button></div>
+    ${contribFormOpen?`<div style="margin:12px 0 4px">
+      <div class="grid2" style="margin-bottom:8px"><select id="cfAcct">${["ISA","연금저축"].map(a=>`<option>${a}</option>`).join("")}</select><input type="text" id="cfAmt" class="amt" inputmode="numeric" placeholder="넣은 금액"></div>
+      <div class="grid2"><input type="date" id="cfDate" value="${today()}" max="${today()}"><button class="btn tiny" id="cfSave" style="flex:0 0 auto">기록</button></div>
+    </div>`:""}
+    ${row("ISA",tp.isaLimit)}
+    ${row("연금저축",tp.pensionLimit,credit)}
+    ${recent.length?`<div style="margin-top:6px">${recent.map(x=>`<div class="rec-row"><span class="faint" style="flex:0 0 auto">${fmtDate(x.date)}</span><span class="nm">${esc(x.account)}</span><b>${won(x.amount)}</b><button class="del" data-cfdel="${x.id}" aria-label="납입 기록 지우기">×</button></div>`).join("")}</div>`:`<div class="faint" style="margin-top:6px">ISA나 연금저축에 돈을 넣을 때마다 "+ 납입 기록"으로 남겨 주세요.</div>`}
+    <details style="margin-top:10px"><summary class="faint" style="cursor:pointer">한도·공제율 설정</summary>
+      <div class="calc-grid">
+        <label><div class="lbl">ISA 연 납입 한도</div><input type="text" class="amt" inputmode="numeric" data-taxplan="isaLimit" value="${won(tp.isaLimit)}"></label>
+        <label><div class="lbl">연금저축 세액공제 한도</div><input type="text" class="amt" inputmode="numeric" data-taxplan="pensionLimit" value="${won(tp.pensionLimit)}"></label>
+        <label><div class="lbl">세액공제율 (%)</div><select data-taxplan="creditRate">${[13.2,16.5].map(r=>`<option value="${r}"${tp.creditRate===r?" selected":""}>${r}%${r===13.2?" (총급여 5,500만 초과)":" (5,500만 이하)"}</option>`).join("")}</select></label>
+      </div>
+      <div class="faint">한도와 공제율은 세법 개정으로 바뀔 수 있어요. 연초에 한 번 확인해서 맞춰 주세요.</div>
+    </details>
+  </div>`;
+}
 // 한 달 생활비(총액)만 쓴다. 예전에 넣어둔 카테고리별 예산은 무시한다.
+// 생활비 예산은 변동비만 비교한다 (고정비와 부모님 상환은 제외).
 function budgetInfo(){
   const total=+(S.budgets&&S.budgets.monthlyTotal)||0;
-  const spent=S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&ym(t.date)===ym(today())).reduce((a,b)=>a+b.amount,0);
-  return {total,spent,remaining:total-spent,pct:total?spent/total*100:0};
+  const {fixed,variable}=fixedSplit(ym(today()));
+  return {total,spent:variable,fixed,remaining:total-variable,pct:total?variable/total*100:0};
 }
 function catRows(from){
   const m={};
@@ -1039,7 +1167,7 @@ function txEntry(t){
   if(editTxId===t.id) return txEditForm(t);
   return `<div class="entry ${t.type}" data-edittx="${t.id}">
     <span class="cat">${esc(t.cat)}</span>
-    <span class="nm">${esc(t.item)}${t.parentCard?'<span class="chip p">부</span>':""}${t.famRepay?'<span class="chip r">상환</span>':""}${t.sideIncome?'<span class="chip s">부수입</span>':""}${t.recurring?'<span class="chip rec">반복</span>':""}</span>
+    <span class="nm">${esc(t.item)}${t.parentCard?'<span class="chip p">부</span>':""}${t.famRepay?'<span class="chip r">상환</span>':""}${t.sideIncome?'<span class="chip s">부수입</span>':""}${t.recurring?'<span class="chip rec">반복</span>':""}${t.fixed===true&&!t.recurring?'<span class="chip rec">고정</span>':""}</span>
     <span class="val" style="color:${t.type==="income"?"var(--up)":"var(--down)"}">${t.type==="income"?"+":"−"}${won(t.amount)}</span>
     <button class="del" data-del="${t.id}" aria-label="지우기">×</button></div>`;
 }
@@ -1091,38 +1219,10 @@ function render(){
       <button class="quick-btn expense" data-quick="expense"><b>− 지출</b>빠르게 기록하기</button>
       <button class="quick-btn income" data-quick="income"><b>＋ 수입</b>빠르게 기록하기</button>
     </div>
-    <div class="card">
-      <div class="lbl">총자산</div>
-      <div class="num" style="font-size:30px;letter-spacing:-.01em">${won(c.totalAssets)}<small style="font-size:14px;color:var(--ink2);font-family:var(--sans)"> 원</small></div>
-      <div class="faint" style="margin-top:2px">${korWon(c.totalAssets)}</div>
-      <div style="margin-top:13px">
-        <div class="rowline" style="font-size:13px;padding:7px 0;border-top:1px solid var(--line2)"><span class="muted">부동산</span><span>${won(c.re)}원</span></div>
-        <div class="rowline" style="font-size:13px;padding:7px 0;border-top:1px solid var(--line2)"><span class="muted">주식 · ETF</span><span>${won(c.stocksSum)}원</span></div>
-        <div class="rowline" style="font-size:13px;padding:7px 0;border-top:1px solid var(--line2)"><span class="muted">기타 자산</span><span>${won(c.othersSum)}원</span></div>
-      </div>
-    </div>
-
-    <div class="card" style="padding:13px 16px">
-      <div class="rowline"><span class="lbl" style="margin:0">총부채</span><span class="muted" style="font-size:15px">${won(c.totalDebt)}원</span></div>
-      <button class="acc" style="padding:10px 0;font-size:13px" data-acc="bank"><span class="tag">은행<span class="chev">${openDebt==="bank"?"▾":"▸"}</span></span><span class="muted">${won(c.bankDebt)}원</span></button>
-      ${openDebt==="bank"?`<div class="accbody">
-        <div class="rowline"><span>보금자리론 체증식 40년 · 3.8%</span></div>
-        <div class="rowline"><span>대출원금</span><span>${won(LOAN_SCHEDULE[0][2])}원</span></div>
-        <div class="rowline"><span>납입 진행</span><span>${c.ls.paid} / ${c.ls.total}회</span></div>
-        ${c.ls.nextDate?`<div class="rowline"><span>다음 납입 (${c.ls.nextDate})</span><span>${won(c.ls.nextAmount)}원</span></div>`:""}
-        <div class="faint" style="margin-top:4px">상환스케줄 원본 기준으로 자동 계산됩니다.</div></div>`:""}
-      <button class="acc" style="padding:10px 0;font-size:13px" data-acc="fam"><span class="tag">부모님<span class="chev">${openDebt==="fam"?"▾":"▸"}</span></span><span class="muted">${won(c.familyDebt)}원</span></button>
-      ${openDebt==="fam"?`<div class="accbody">
-        <div class="rowline"><span>기준 잔액 (${S.familyLoan.asOf})</span><span>${won(S.familyLoan.openingBalance)}원</span></div>
-        <div class="rowline"><span>기록된 상환</span><span style="color:var(--up)">−${won(c.repaid)}원</span></div>
-        <div class="rowline"><span>부모카드 사용 (부)</span><span style="color:var(--amber)">+${won(c.cardAdd)}원</span></div>
-        <div class="faint" style="margin-top:4px">무이자. 기록에 "부모님 상환"이라고 적으면 자동으로 줄어듭니다.</div>
-        <div class="rowline" style="margin-top:10px;gap:10px"><label class="faint" for="famTarget" style="flex:0 0 auto">다 갚을 목표</label><input type="month" id="famTarget" data-fam="targetYm" value="${esc(S.familyLoan.targetYm||"")}" style="flex:1;padding:7px 10px;font-size:13px"></div>
-        ${(()=>{const fp=famPlan(c);return fp?`<div style="margin-top:8px">${bar(fp.pct,"var(--up)")}</div><div class="rowline" style="margin-top:6px"><span>${Math.round(fp.pct)}% 상환 · ${fp.monthsLeft}개월 남음</span><span>매달 약 <b>${won(fp.need)}원</b></span></div><div class="faint">이번 달 상환 ${won(fp.thisMonth)}원</div>`:"";})()}</div>`:""}
-    </div>
 `;
-    // 목표는 홈에서 바로 수정한다.
     const goals=goalList(), pace=monthlyPace();
+    h+=checkCard(c,pace);
+    // 목표는 홈에서 바로 수정한다.
     h+=`<div class="card"><div class="rowline" style="margin-bottom:6px"><strong>나의 목표</strong><button class="edit-pill" data-goaledit>${goalEdit?"완료":"수정"}</button></div>`;
     if(goalEdit){
       goals.forEach((t,i)=>{
@@ -1157,25 +1257,19 @@ function render(){
       if(left0&&pace&&!goalEdit) h+=`<div class="sim"><div class="rowline"><span class="lbl" style="margin:0">매달 더 모으면?</span><b id="simExtraOut">+0원</b></div>
         <input type="range" id="simExtra" min="0" max="3000000" step="100000" value="0" data-left="${left0}" data-pace="${Math.max(0,pace.v)}" data-years="${g0.years}" aria-label="매달 추가로 모을 금액">
         <div class="faint" id="simOut">${simText(left0,Math.max(0,pace.v),0,g0.years)}</div></div>`;
+    if(!goalEdit&&goals.length) h+=`<button class="link-btn" data-opencalc>지금 집을 팔고 갈아타면 얼마짜리 집? 계산해 보기 →</button>`;
     h+=`</div>`;
-    h+=checkCard(c,pace);
-    if(+today().slice(8,10)<=10) h+=monthSummary(recentMonths(2)[0]);
     const bi=budgetInfo();
     if(bi.total){
       h+=`<div class="budget-card"><div class="budget-top"><div><div class="lbl">이번 달 남은 생활비</div><div class="budget-remaining" style="color:${bi.remaining<0?'var(--down)':'var(--ink)'}">${bi.remaining<0?'초과 ':''}${won(Math.abs(bi.remaining))}원</div></div><div class="muted">${Math.round(bi.pct)}% 사용</div></div>
         <div class="bar"><i style="width:${Math.min(100,bi.pct)}%;background:${bi.pct>100?'var(--down)':bi.pct>80?'var(--amber)':'var(--accent)'}"></i></div>
-        <div class="rowline faint" style="margin-top:7px"><span>사용 ${won(bi.spent)}원</span><span>한 달 생활비 ${won(bi.total)}원</span></div>
+        <div class="rowline faint" style="margin-top:7px"><span>변동비 ${won(bi.spent)}원 사용</span><span>한 달 생활비 ${won(bi.total)}원</span></div>
+        ${bi.fixed?`<div class="faint" style="margin-top:4px">고정비 ${won(bi.fixed)}원은 따로 빼고 계산했어요</div>`:""}
       </div>`;
     }else{
       h+=`<div class="budget-card"><div class="rowline"><div><strong>한 달 생활비를 정해보세요</strong><div class="faint" style="margin-top:5px">남은 생활비를 홈에서 바로 확인할 수 있어요.</div></div><button class="edit-pill" data-openbudget>설정</button></div></div>`;
     }
-    const nh=(S.netWorthHistory||[]).slice(-12);
-    h+=`<div class="trend-card"><div class="rowline"><div><strong>순자산 변화</strong><div class="faint" style="margin-top:4px">매월 자동으로 기록됩니다.</div></div><span class="num" style="color:${nh.length>1&&nh[nh.length-1].net>=nh[nh.length-2].net?'var(--up)':'var(--ink2)'}">${nh.length>1?`${nh[nh.length-1].net>=nh[nh.length-2].net?'+':'−'}${won(Math.abs(nh[nh.length-1].net-nh[nh.length-2].net))}원`:"첫 기록"}</span></div>
-      <div style="margin-top:12px">${trendChart(nh.map(x=>x.ym),nh.map(x=>x.net),"#3182F6",nh.length>1?"최근 "+nh.length+"개월":"이번 달부터 추이를 기록해요",true)}</div></div>`;
-    h+=`<div class="grid2" style="margin-top:22px">
-      <div class="card"><div class="lbl">이번 달 지출</div><div class="num" style="font-size:19px;color:var(--down)">${won(spent)}</div></div>
-      <div class="card"><div class="lbl">이번 달 수입</div><div class="num" style="font-size:19px;color:var(--up)">${won(earned)}</div></div>
-    </div>`;
+    if(+today().slice(8,10)<=10) h+=monthSummary(recentMonths(2)[0]);
   }
 
   /* ───── 기록 ───── */
@@ -1188,7 +1282,7 @@ function render(){
     ${pending.length?`<button class="btn ghost" id="cancelpend">취소</button>`:""}</div>`;
     // 매달 반복 (월급, 관리비, 부모님 상환 등)
     const recs=S.recurring||[];
-    h+=`<div class="card" style="margin-top:14px"><div class="rowline"><div><strong>매달 반복</strong><div class="faint" style="margin-top:3px">등록해 두면 매달 그 날짜에 자동으로 기록돼요.</div></div><button class="edit-pill" data-recform>${recFormOpen?"닫기":"+ 추가"}</button></div>`;
+    h+=`<div class="card" style="margin-top:14px"><div class="rowline"><div><strong>매달 반복</strong><div class="faint" style="margin-top:3px">등록해 두면 매달 그 날짜에 자동으로 기록되고, 지출은 고정비로 따로 계산돼요.</div></div><button class="edit-pill" data-recform>${recFormOpen?"닫기":"+ 추가"}</button></div>`;
     if(recs.length) h+=`<div style="margin-top:8px">${recs.map(r=>`<div class="rec-row"><span class="faint" style="flex:0 0 auto">매달 ${r.day}일</span><span class="nm">${esc(r.item)}${r.famRepay?'<span class="chip r">상환</span>':""}${r.sideIncome?'<span class="chip s">부수입</span>':""}</span><b style="color:${r.type==="income"?"var(--up)":"var(--down)"}">${r.type==="income"?"+":"−"}${won(r.amount)}</b><button class="del" data-recdel="${r.id}" aria-label="반복 삭제">×</button></div>`).join("")}</div>`;
     if(recFormOpen) h+=`<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--line2)">
       <div class="grid2" style="margin-bottom:8px">
@@ -1235,7 +1329,7 @@ function render(){
     const incTot=curAgg.base+curAgg.side;
 
     h+=`<div class="summary-grid">
-      <div class="summary-card"><div class="lbl">이번 달 지출</div><div class="amount" style="color:var(--down)">${won(mTot)}원</div></div>
+      <div class="summary-card"><div class="lbl">이번 달 지출</div><div class="amount" style="color:var(--down)">${won(mTot)}원</div>${(()=>{const fs2=fixedSplit(ym(today()));return fs2.fixed?`<div class="faint" style="margin-top:3px">고정 ${korWon(fs2.fixed)} · 변동 ${korWon(fs2.variable)}</div>`:"";})()}</div>
       <div class="summary-card"><div class="lbl">이번 달 수입</div><div class="amount" style="color:var(--up)">${won(incTot)}원</div></div>
     </div>
     <div class="flow-switch" role="tablist" aria-label="기록 종류">
@@ -1280,11 +1374,39 @@ function render(){
 
   /* ───── 자산 ───── */
   if(tab==="자산"){
+    // 순자산 한눈에: 무엇으로 이뤄져 있고(자산) 무엇을 빼야 하는지(부채)
+    const parts=[["부동산",c.re,"#2a78d6"],["주식·ETF",c.stocksSum,"#eb6834"],["기타 자산",c.othersSum,"#1baf7a"]].filter(x=>x[1]>0);
+    h+=`<div class="card"><div class="rowline"><strong>자산 구성</strong><span class="faint">총자산 ${korWon(c.totalAssets)}</span></div>
+      ${c.totalAssets?`<div class="acct-bar" role="img" aria-label="자산 구성">${parts.map(p=>`<i style="flex:${p[1]};background:${p[2]}"></i>`).join("")}</div>`:""}
+      ${parts.map(p=>`<div class="acct-row"><i class="acct-dot" style="background:${p[2]}"></i><span>${p[0]}</span><span class="pc">${Math.round(p[1]/c.totalAssets*100)}%</span><b>${won(p[1])}원</b></div>`).join("")}
+    </div>
+` + healthCard(c) + `    <div class="card" style="padding:13px 16px">
+      <div class="rowline"><span class="lbl" style="margin:0">총부채</span><span class="muted" style="font-size:15px">${won(c.totalDebt)}원</span></div>
+      <button class="acc" style="padding:10px 0;font-size:13px" data-acc="bank"><span class="tag">은행<span class="chev">${openDebt==="bank"?"▾":"▸"}</span></span><span class="muted">${won(c.bankDebt)}원</span></button>
+      ${openDebt==="bank"?`<div class="accbody">
+        <div class="rowline"><span>보금자리론 체증식 40년 · 3.8%</span></div>
+        <div class="rowline"><span>대출원금</span><span>${won(LOAN_SCHEDULE[0][2])}원</span></div>
+        <div class="rowline"><span>납입 진행</span><span>${c.ls.paid} / ${c.ls.total}회</span></div>
+        ${c.ls.nextDate?`<div class="rowline"><span>다음 납입 (${c.ls.nextDate})</span><span>${won(c.ls.nextAmount)}원</span></div>`:""}
+        <div class="faint" style="margin-top:4px">상환스케줄 원본 기준으로 자동 계산됩니다.</div></div>`:""}
+      <button class="acc" style="padding:10px 0;font-size:13px" data-acc="fam"><span class="tag">부모님<span class="chev">${openDebt==="fam"?"▾":"▸"}</span></span><span class="muted">${won(c.familyDebt)}원</span></button>
+      ${openDebt==="fam"?`<div class="accbody">
+        <div class="rowline"><span>기준 잔액 (${S.familyLoan.asOf})</span><span>${won(S.familyLoan.openingBalance)}원</span></div>
+        <div class="rowline"><span>기록된 상환</span><span style="color:var(--up)">−${won(c.repaid)}원</span></div>
+        <div class="rowline"><span>부모카드 사용 (부)</span><span style="color:var(--amber)">+${won(c.cardAdd)}원</span></div>
+        <div class="faint" style="margin-top:4px">무이자. 기록에 "부모님 상환"이라고 적으면 자동으로 줄어듭니다.</div>
+        <div class="rowline" style="margin-top:10px;gap:10px"><label class="faint" for="famTarget" style="flex:0 0 auto">다 갚을 목표</label><input type="month" id="famTarget" data-fam="targetYm" value="${esc(S.familyLoan.targetYm||"")}" style="flex:1;padding:7px 10px;font-size:13px"></div>
+        ${(()=>{const fp=famPlan(c);return fp?`<div style="margin-top:8px">${bar(fp.pct,"var(--up)")}</div><div class="rowline" style="margin-top:6px"><span>${Math.round(fp.pct)}% 상환 · ${fp.monthsLeft}개월 남음</span><span>매달 약 <b>${won(fp.need)}원</b></span></div><div class="faint">이번 달 상환 ${won(fp.thisMonth)}원</div>`:"";})()}</div>`:""}
+    </div>`;
+    const nh=(S.netWorthHistory||[]).slice(-12);
+    h+=`<div class="trend-card"><div class="rowline"><div><strong>순자산 변화</strong><div class="faint" style="margin-top:4px">매월 자동으로 기록됩니다.</div></div><span class="num" style="color:${nh.length>1&&nh[nh.length-1].net>=nh[nh.length-2].net?'var(--up)':'var(--ink2)'}">${nh.length>1?`${nh[nh.length-1].net>=nh[nh.length-2].net?'+':'−'}${won(Math.abs(nh[nh.length-1].net-nh[nh.length-2].net))}원`:"첫 기록"}</span></div>
+      <div style="margin-top:12px">${trendChart(nh.map(x=>x.ym),nh.map(x=>x.net),"#3182F6",nh.length>1?"최근 "+nh.length+"개월":"이번 달부터 추이를 기록해요",true)}</div></div>`;
     const stockDates=S.stocks.map(s=>s.priceDate).filter(Boolean).sort().reverse();
     const evalOf=s=>(s.currentPrice!=null?s.currentPrice:s.buyPrice)*s.qty;
     const pfBuy=S.stocks.reduce((a,s)=>a+s.buyPrice*s.qty,0), pfVal=c.stocksSum;
     const pl=pfVal-pfBuy, plPct=pfBuy?pl/pfBuy*100:0, plColor=pl>=0?"var(--up)":"var(--down)";
     const byAcct=ACCOUNTS.map(a=>({a,val:S.stocks.filter(s=>(s.account||"일반")===a).reduce((t,s)=>t+evalOf(s),0)})).filter(x=>x.val>0);
+    h+=contribCard();
     h+=`<div class="asset-kicker" style="align-items:center"><strong>주식 · ETF</strong><button class="edit-pill" id="toggleAssetEdit">${assetEdit?"수정 끝내기":"자산 수정"}</button></div>
     <div class="card pf-card">
       <div class="lbl">평가금액 · ${stockDates[0]?fmtDate(stockDates[0])+" 종가 기준":"종가 자동 갱신 대기 중"}</div>
@@ -1397,6 +1519,7 @@ function render(){
           <span class="muted">자기자본 (시세 − 은행부채)</span><span>${won(c.re-c.bankDebt)}원</span></div>
       </div>
     </details>`;
+    h+=swapCalc(c);
 
     h+=`<div class="sec">기타 자산 <span class="muted" style="font-weight:400">${won(c.othersSum)}원</span></div>
     <div class="faint" style="margin-bottom:9px">현금, 예금, 교직원공제회, 주택청약 등을 한곳에서 봅니다.</div>`;
@@ -1409,11 +1532,8 @@ function render(){
     });
     h+=`${assetEdit?`<div class="btnrow"><button class="btn ghost tiny" id="addother">항목 추가</button></div>`:""}
 
-    <div class="sec">목표 아파트</div>
-    <div class="faint" style="margin-bottom:9px">목표 금액·기간·예상 대출은 홈의 "나의 목표"에서 바꿀 수 있어요.</div>`;
-    goalList().forEach(t=>{
-      h+=`<div class="card"><div class="rowline"><div><strong>${esc(t.name)}</strong><div class="faint" style="margin-top:4px">${t.years}년 목표${t.loan?` · 대출 ${uk(t.loan)} 예상`:""}</div></div><span class="num">${uk(t.price)}</span></div></div>`;
-    });
+    `;
+    if(assetEdit||window.__rec) h+=`<div class="sec">아파트 추천</div>`;
     if(assetEdit) h+=`<button class="btn full" id="recommend" ${busy.rec?"disabled":""}>${spin(busy.rec,busy.rec?"시장 분석 중…":"내 재무상태에 맞는 아파트 추천받기")}</button>`;
     if(window.__rec){
       const r=window.__rec;
@@ -1438,7 +1558,7 @@ function render(){
     h+=`<div class="subpage-head"><strong>설정</strong></div>
     <div class="sec" id="budgetSettings" style="margin-top:2px">한 달 생활비</div>
     <div class="card"><div class="field"><div class="lbl">한 달에 쓸 생활비</div><input type="text" class="amt" id="budgetTotal" inputmode="numeric" value="${S.budgets?.monthlyTotal?won(S.budgets.monthlyTotal):''}" placeholder="예: 2,000,000"></div>
-      <div class="faint">부모님 상환은 빼고, 이번 달 지출 전체를 이 금액과 비교해요.</div></div>
+      <div class="faint">고정비(매달 반복·고정비로 표시한 기록)와 부모님 상환은 빼고, 이번 달 변동비만 이 금액과 비교해요.</div></div>
     <div class="faint" style="margin:6px 2px 17px">아래 내용은 분석과 조언을 만들 때 항상 함께 전달됩니다. 언제든 고치면 다음 조언부터 반영돼요.</div>
     <div class="card"><div class="lbl">코칭 참고사항 — 조언할 때 지켜야 할 것</div>
       <textarea rows="4" data-prof="coachNote">${esc(S.profile.coachNote)}</textarea></div>
@@ -1608,6 +1728,7 @@ function bind(){
     t.date=$("#etDate").value||t.date; t.cat=$("#etCat").value; t.type=t.cat==="수입"?"income":"expense";
     t.item=$("#etItem").value.trim()||t.item; t.amount=amt;
     t.parentCard=$("#etPc").checked; t.famRepay=$("#etFr").checked; t.sideIncome=t.type==="income"&&$("#etSi").checked;
+    if(t.type==="expense") t.fixed=$("#etFx").checked; else delete t.fixed;
     editTxId=null; notice=""; await commit();
   });
   $$("[data-txrec]").forEach(el=>el.onclick=async()=>{
@@ -1682,6 +1803,30 @@ function bind(){
     if(!confirm(`"${x.label}" 기록(${x.count}건, 저장 ${x.at?savedTime(x.at):"?"})으로 되돌릴까요?\n지금 화면의 기록은 자동 백업에 남겨둬요.`)) return;
     await restoreFrom(x); notice=`${x.label} 기록으로 복구했어요.${signedIn()?" 계정에도 저장했어요.":""}`;
   }));
+  // 갈아타기 계산기: 빈칸이면 앱 값을 쓰도록 null로 저장한다.
+  $$("[data-plan]").forEach(el=>el.onchange=async()=>{
+    const k=el.dataset.plan, raw=el.value.trim(); S.plan=S.plan||{};
+    if(["rate","years","buyCostPct"].includes(k)){ const v=parseFloat(raw.replace(/[^\d.]/g,"")); S.plan[k]=isNaN(v)?DEFAULT.plan[k]:v; }
+    else S.plan[k]=raw===""?null:(+raw.replace(/[^\d]/g,"")||0);
+    await commit();
+  });
+  $$("[data-plan-check]").forEach(el=>el.onchange=async()=>{S.plan=S.plan||{};S.plan[el.dataset.planCheck]=el.checked;await commit()});
+  $$("[data-opencalc]").forEach(b=>b.onclick=()=>{tab="자산";render();setTimeout(()=>document.querySelector("#swapCalc")?.scrollIntoView({behavior:"smooth"}),0)});
+  // ISA·연금 납입 기록
+  $$("[data-contribform]").forEach(el=>el.onclick=()=>{contribFormOpen=!contribFormOpen;render()});
+  if($("#cfSave")) $("#cfSave").onclick=async()=>{
+    const amount=+$("#cfAmt").value.replace(/[^\d]/g,"")||0;
+    if(!amount){ notice="넣은 금액을 입력해 주세요."; return render(); }
+    S.contribs=S.contribs||[];
+    S.contribs.push({id:uid(),account:$("#cfAcct").value,amount,date:$("#cfDate").value||today()});
+    contribFormOpen=false; notice=""; await commit();
+  };
+  $$("[data-cfdel]").forEach(el=>el.onclick=async()=>{if(!confirm("이 납입 기록을 지울까요?"))return;S.contribs=(S.contribs||[]).filter(x=>x.id!==el.dataset.cfdel);await commit()});
+  $$("[data-taxplan]").forEach(el=>el.onchange=async()=>{
+    const k=el.dataset.taxplan; S.taxPlan={...taxPlan()};
+    S.taxPlan[k]=k==="creditRate"?parseFloat(el.value):(+el.value.replace(/[^\d]/g,"")||DEFAULT.taxPlan[k]);
+    await commit();
+  });
   $$("[data-prof]").forEach(el=>el.onchange=async()=>{S.profile[el.dataset.prof]=el.value;await commit()});
   $$("[data-set]").forEach(el=>{
     const flush=async(rerender)=>{
