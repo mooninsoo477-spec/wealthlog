@@ -327,6 +327,10 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 .sc-sel{flex:1;min-width:0;color:var(--ink3);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sc-val{font-size:15px;font-weight:800;letter-spacing:-.02em}
 .sc-diff{font-size:12px;font-weight:700;min-width:38px;text-align:right}
+.mw-scroll{overflow-x:auto;margin:12px -4px 0;padding:0 4px;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+.mw-scroll svg{display:block}
+:root{--c-month:#3182F6;--c-week:#C98300}
+:root[data-theme="dark"]{--c-month:#3D85F0;--c-week:#BF8216}
 .sc-big{font-size:25px;font-weight:850;letter-spacing:-.035em;margin-top:2px}
 .sc-big small{font-size:14px;margin-left:1px}
 .sc-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--ink2)}
@@ -431,6 +435,7 @@ const DEFAULT={
   targets:[{id:uid(),stage:1,name:"1단계 — 미정",price:1500000000,years:5},
            {id:uid(),stage:2,name:"2단계 — 목동",price:3000000000,years:10}],
   budgets:{monthlyTotal:0,categories:{}},
+  basics:{emergency:200000,monthlySave:0},
   contribs:[],
   invest:{base:{},cash:{}},
   dividends:[],
@@ -447,7 +452,7 @@ const DEFAULT={
     supabaseUrl:"",supabaseKey:"",syncCode:"",theme:"auto"}
 };
 let S=JSON.parse(JSON.stringify(DEFAULT));
-let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false, contribFormOpen=false, divFormOpen=false, evFormOpen=false, txQuery="", pView="week", chartSel={};
+let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false, contribFormOpen=false, divFormOpen=false, evFormOpen=false, txQuery="", pView="month", chartPick=null;
 let syncState={status:"local",error:""};
 
 /* ══════════════ 저장소 (Claude storage → localStorage → Google Drive) ══════════════ */
@@ -984,6 +989,8 @@ function avgMonthly(){
   const avg=k=>rows.reduce((s,a)=>s+a[k],0)/rows.length;
   return {inc:avg("base")+avg("side"),exp:avg("expense"),fam:avg("fam"),months:rows.length};
 }
+// 사용자가 설정에서 정한 기준 금액 (비상금 목표, 매달 저축 목표). 재무 건강·분석·계산기에 쓴다.
+function basics(){ return {...DEFAULT.basics,...(S.basics||{})}; }
 // 비상금으로 셀 자산: 이름에 현금·예금 등이 들어간 기타 자산 (청약·공제회처럼 바로 못 쓰는 돈은 제외).
 const LIQUID=/현금|예금|적금|CMA|파킹|통장|MMF/i;
 // 재무 건강: 좋음/주의/위험을 색과 글자로 함께 표시한다.
@@ -992,7 +999,10 @@ function healthCard(c){
   const up=(v,good,warn)=>v>=good?"ok":v>=warn?"warn":"bad", down=(v,good,warn)=>v<=good?"ok":v<=warn?"warn":"bad";
   const liquid=S.others.filter(o=>LIQUID.test(o.name)).reduce((s,o)=>s+o.amount,0);
   const monthlyExp=a?a.exp:(+(S.budgets&&S.budgets.monthlyTotal)||0);
-  if(monthlyExp){ const m=liquid/monthlyExp; rows.push([up(m,6,3),"비상금",`${m.toFixed(1)}개월 치`,`바로 쓸 수 있는 돈 ${korWon(liquid)} ÷ 월 생활비 ${korWon(monthlyExp)} · 3~6개월 치 이상이면 안전해요`]); }
+  const B=basics();
+  if(B.emergency) rows.push([liquid>=B.emergency?"ok":liquid>=B.emergency/2?"warn":"bad","비상금",`${korWon(liquid)} / ${korWon(B.emergency)}`,`바로 쓸 수 있는 돈(현금·예금 등) · 설정에서 정한 비상금 목표 기준`]);
+  else if(monthlyExp){ const m=liquid/monthlyExp; rows.push([up(m,6,3),"비상금",`${m.toFixed(1)}개월 치`,`바로 쓸 수 있는 돈 ${korWon(liquid)} ÷ 월 생활비 ${korWon(monthlyExp)} · 3~6개월 치 이상이면 안전해요`]); }
+  if(B.monthlySave&&a){ const sv=a.inc-a.exp-a.fam; rows.push([up(sv/B.monthlySave*100,100,70),"매달 저축",`${korWon(sv)} / 목표 ${korWon(B.monthlySave)}`,`최근 ${a.months}개월 평균 (수입 − 지출 − 부모님 상환)`]); }
   if(a&&a.inc){ const r=(a.inc-a.exp)/a.inc*100; rows.push([up(r,30,15),"저축률",`${Math.round(r)}%`,`최근 ${a.months}개월 평균 · 30% 이상이면 좋아요`]); }
   const loanPay=(c.ls.nextAmount||0)+(a?a.fam:0);
   if(a&&a.inc&&loanPay){ const r=loanPay/a.inc*100; rows.push([down(r,30,40),"대출 상환 부담",`월 소득의 ${Math.round(r)}%`,`은행 ${won(c.ls.nextAmount||0)}원${a.fam?` + 부모님 ${won(Math.round(a.fam))}원`:""} · 40%를 넘으면 빠듯해요`]); }
@@ -1006,7 +1016,8 @@ function swapCalc(c){
   const P={...DEFAULT.plan,...(S.plan||{})};
   const sell=P.sellPrice||c.re, autoCost=Math.round(sell*0.005);
   const liquid=S.others.filter(o=>LIQUID.test(o.name)).reduce((s,o)=>s+o.amount,0);
-  const sellCost=P.sellCost!=null?P.sellCost:autoCost, extra=P.extraCash!=null?P.extraCash:liquid;
+  const spare=Math.max(0,liquid-basics().emergency);
+  const sellCost=P.sellCost!=null?P.sellCost:autoCost, extra=P.extraCash!=null?P.extraCash:spare;
   const fam=P.payParents?c.familyDebt:0;
   const cash=sell-sellCost-c.bankDebt-fam+extra, loan=P.loan||0;
   const maxPrice=Math.max(0,Math.floor((cash+loan)/(1+P.buyCostPct/100)/1e6)*1e6);
@@ -1019,7 +1030,7 @@ function swapCalc(c){
     <div class="calc-grid">
       ${fld("sellPrice","지금 집 매도가",P.sellPrice?won(P.sellPrice):"",won(c.re))}
       ${fld("sellCost","매도 비용 (중개·세금)",P.sellCost!=null?won(P.sellCost):"",won(autoCost))}
-      ${fld("extraCash","추가로 넣을 돈 (예금 등)",P.extraCash!=null?won(P.extraCash):"",won(liquid))}
+      ${fld("extraCash","추가로 넣을 돈 (비상금 빼고)",P.extraCash!=null?won(P.extraCash):"",won(spare))}
       ${fld("loan","새 집 대출",P.loan?won(P.loan):"","500,000,000")}
       ${fld("rate","대출 금리 (%)",P.rate,"4")}
       ${fld("years","대출 기간 (년)",P.years,"30")}
@@ -1222,8 +1233,7 @@ function periodList(){
   const curK=keyOf({date:today()}), past=rows.filter(r=>r.k!==curK), avg=past.length?past.reduce((s,r)=>s+r.sum,0)/past.length:0;
   const unit={month:"월",week:"주",day:"일"}[pView];
   let h=avg?`<div class="faint" style="margin:2px 2px 8px">${unit} 평균 ${won(Math.round(avg))}원 <span style="opacity:.8">(${{month:"이번 달",week:"이번 주",day:"오늘"}[pView]} 제외)</span></div>`:"";
-  const sp=periodSeries(pView), si=chartSel[pView]!=null&&chartSel[pView]<sp.length?chartSel[pView]:sp.length-1;
-  const openK=sp[si]?(pView==="month"?sp[si].s.slice(0,7):sp[si].s):null, hasOpen=rows.some(r=>r.k===openK);
+  const openK=chartPick&&chartPick.v===pView?chartPick.k:null, hasOpen=rows.some(r=>r.k===openK);
   rows.forEach((r,i)=>{
     const color=exp?"var(--down)":"var(--up)";
     h+=`<details class="weekgroup pgroup"${(hasOpen?r.k===openK:i===0)?" open":""}${r.k===openK?' id="pgOpen"':""}><summary><div class="pg">
@@ -1259,6 +1269,7 @@ function analysisData(){
     기준일:today(),
     사용자메모:S.profile||{},
     월별현금흐름_최근:months,
+    사용자기준:{비상금목표:basics().emergency||"정하지 않음",매달저축목표:basics().monthlySave||"정하지 않음",한달생활비예산:bi.total||"정하지 않음"},
     생활비예산:bi.total?{한달예산:bi.total,이번기간사용:bi.spent,사용률:Math.round(bi.pct)+"%",기간경과:Math.round(bi.timePct)+"%"}:"설정 안 함",
     매달반복:(S.recurring||[]).map(r=>({항목:r.item,금액:r.amount,종류:r.type==="income"?"수입":"지출",날짜:r.day})),
     순자산:{순자산:Math.round(c.net),총자산:Math.round(c.totalAssets),총부채:Math.round(c.totalDebt),월평균증가:pace?Math.round(pace.v):null,증가기준:pace?pace.basis:null,
@@ -1279,7 +1290,7 @@ function analysisPrompt(){
 분석할 영역 (이 순서, 각 영역 1개씩):
 1. 현금흐름·저축률 — 수입 대비 남는 돈, 부모님 상환·대출 납부를 포함한 실질 저축률, 추세
 2. 소비 습관 — 범주별 지출의 크기와 변화, 고정비 비중, 생활비 예산 준수, 반복되는 패턴
-3. 비상자금 — 현금성 자산이 월 지출(고정비+생활비)의 몇 개월분인지 (3~6개월 기준)
+3. 비상자금 — 사용자기준.비상금목표가 있으면 그 금액만 기준으로 판단하라(3~6개월 규칙을 강요하거나 다른 금액을 제시하지 마라). 목표가 없을 때만 월 지출의 3~6개월분 기준
 4. 부채 — 은행 대출(금리·집값 대비 비율), 부모님 차입금 상환 속도와 우선순위
 5. 절세 — 연금저축 세액공제 한도·ISA 한도 활용도, 남은 기간에 얼마를 넣으면 얼마가 돌아오는지, IRP 추가 여부 등 한국 세제 기준
 6. 투자 — 계좌별 배분(일반/ISA/연금저축), 종목 집중도, 원금 대비 수익, 절세계좌를 먼저 채우는지
@@ -1291,6 +1302,7 @@ function analysisPrompt(){
 - 실행할 일은 구체적으로: 금액·시점·계좌를 넣어라 (예: "12월까지 연금저축에 월 50만원씩 150만원 추가 → 환급 약 20만원").
 - 특정 종목을 사거나 팔라고 권하지 말고, 배분·비중·계좌 활용 수준으로만 말해라.
 - 사용자메모(coachNote 등)에 적힌 가치관은 존중해라.
+- 사용자기준(비상금목표, 매달저축목표, 한달생활비예산)은 사용자가 직접 정한 금액이다. 그대로 기준으로 쓰고 바꾸라고 하지 마라.
 - 한국어, 짧고 명확하게. 영역마다 points 2~3개, actions 1~2개.
 
 출력은 JSON 하나만 (설명·마크다운 금지):
@@ -1306,13 +1318,13 @@ async function runAnalysis(){
     const raw=stripJson(await ai(analysisPrompt(),false,8192));
     const j=JSON.parse(raw.slice(raw.indexOf("{"),raw.lastIndexOf("}")+1));
     if(!Array.isArray(j.sections)) throw new Error("형식 오류");
-    S.analysis={date:new Date().toISOString(),result:j};
+    S.analysis={date:new Date().toISOString(),result:j};  // stale 표시는 새 결과로 사라진다
     busy.analysis=false; await commit();
   }catch(e){
     busy.analysis=false; notice=aiErr(e,"재무 분석"); render();
   }
 }
-const analysisStale=()=>!S.analysis||Date.now()-new Date(S.analysis.date).getTime()>7*864e5;
+const analysisStale=()=>!S.analysis||S.analysis.stale||Date.now()-new Date(S.analysis.date).getTime()>7*864e5;
 function analysisEntry(){
   const r=S.analysis&&S.analysis.result;
   return `<button class="card analysis-entry" data-openanalysis>
@@ -1346,52 +1358,64 @@ function analysisPage(){
   h+=`<div class="faint" style="margin:12px 4px">AI가 앱에 기록된 숫자만 보고 만든 참고용 분석이에요. 세법·한도는 바뀔 수 있으니 큰 결정 전에는 금융기관이나 세무 상담으로 확인하세요.</div>`;
   return h;
 }
-// 월(6개월)·주(8주)·일(14일) 단위 지출(또는 수입) 합계. 기록이 없는 기간도 0으로 넣어 추이가 끊기지 않게 한다.
-function periodSeries(v){
-  const from=recordsFrom(), t0=today(), exp=txView==="expense";
-  let ps;
-  if(v==="month") ps=recentMonths(6).map(m=>({s:m+"-01",e:m+"-31",short:`${+m.slice(5,7)}월`,label:`${+m.slice(5,7)}월`}));
-  else if(v==="week"){ const w0=weekStart(t0); ps=Array.from({length:8},(_,i)=>{const w=addDate(w0,-7*(7-i)),e=addDate(w,6);return {s:w,e,short:`${+w.slice(5,7)}/${+w.slice(8,10)}`,label:`${md(w)}–${md(e)}`};}); }
-  else ps=Array.from({length:14},(_,i)=>{const d=addDate(t0,-(13-i));return {s:d,e:d,short:String(+d.slice(8,10)),label:fmtDate(d)};});
-  if(from) ps=ps.filter(p=>p.e>=from);
-  const tx=S.tx.filter(t=>t.type===txView&&(!exp||!t.famRepay)&&!(exp&&v==="day"&&isFixed(t))&&(!from||t.date>=from));
-  ps.forEach(p=>{const it=tx.filter(t=>t.date>=p.s&&t.date<=p.e);p.sum=it.reduce((s,t)=>s+t.amount,0);p.fixed=exp?it.filter(isFixed).reduce((s,t)=>s+t.amount,0):0;});
-  return ps;
-}
-// 월(6개월)·주(8주)·일(14일) 그래프를 한 카드에 위아래로. 막대 = 합계(지출이면 고정비는 연하게), 꺾은선 = 최근 3기간 평균.
-// 막대를 누르면 그 줄의 숫자가 바뀌고, 아래 목록이 그 단위·그 기간으로 펼쳐진다.
-function spendChart(v){
-  const ps=periodSeries(v); if(!ps.length) return "";
-  const exp=txView==="expense", col=exp?"var(--down)":"var(--up)", unit={month:"달",week:"주",day:"일"}[v];
-  const sel=chartSel[v]!=null&&chartSel[v]<ps.length?chartSel[v]:ps.length-1, p=ps[sel];
-  const ma=ps.map((_,i)=>{const w=ps.slice(Math.max(0,i-2),i+1);return w.reduce((s,x)=>s+x.sum,0)/w.length;});
-  const W=330,H=96,top=8,bot=17,n=ps.length,cw=W/n,bw=Math.min(24,cw*0.6);
-  const max=Math.max(...ps.map(x=>x.sum),...ma,1), base=H-bot, y=x=>top+(1-x/max)*(base-top), cx=i=>(i+0.5)*cw;
-  let g="";
-  ps.forEach((x,i)=>{
-    const op=i===sel?1:0.42, x0=(cx(i)-bw/2).toFixed(1);
-    if(x.sum>0){
-      const vTop=y(x.sum-x.fixed);
-      if(x.sum-x.fixed>0) g+=`<rect x="${x0}" y="${vTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1,base-vTop).toFixed(1)}" rx="3" fill="${col}" opacity="${op}"/>`;
-      if(x.fixed>0){ const fTop=y(x.sum); g+=`<rect x="${x0}" y="${fTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1,vTop-fTop-(x.sum-x.fixed>0?2:0)).toFixed(1)}" rx="3" fill="${col}" opacity="${op*0.3}"/>`; }
+// 월·주 지출(또는 수입): 최근 12개월. 각 달의 주는 그 달에 속한 날만 더해서, 주 합계를 더하면 달 합계가 된다.
+function mwData(){
+  const from=recordsFrom(), exp=txView==="expense", t0=today();
+  const tx=S.tx.filter(t=>t.type===txView&&(!exp||!t.famRepay)&&(!from||t.date>=from));
+  const sumF=a=>a.reduce((s,t)=>s+t.amount,0), fixF=a=>exp?sumF(a.filter(isFixed)):0;
+  return recentMonths(12).filter(m=>!from||m>=from.slice(0,7)).map(m=>{
+    const mt=tx.filter(t=>ym(t.date)===m), first=m+"-01";
+    const end=`${m}-${pad(new Date(+m.slice(0,4),+m.slice(5,7),0).getDate())}`;
+    const weeks=[];
+    for(let w=weekStart(first);w<=end&&w<=t0;w=addDate(w,7)){
+      const s=w<first?first:w, e=addDate(w,6)>end?end:addDate(w,6), it=mt.filter(t=>t.date>=s&&t.date<=e);
+      weeks.push({k:w,n:weeks.length+1,s,e,sum:sumF(it),fixed:fixF(it)});
     }
-    if(n<=8||i%2===(n-1)%2) g+=`<text x="${cx(i).toFixed(1)}" y="${H-3}" font-size="9.5" text-anchor="middle" fill="${i===sel?"var(--ink)":"var(--ink3)"}" font-weight="${i===sel?700:400}">${x.short}</text>`;
+    return {m,sum:sumF(mt),fixed:fixF(mt),weeks};
   });
-  g+=`<line x1="0" x2="${W}" y1="${base}" y2="${base}" stroke="var(--line)"/>`;
-  g+=`<path d="${ma.map((m,i)=>`${i?"L":"M"}${cx(i).toFixed(1)},${y(m).toFixed(1)}`).join("")}" fill="none" stroke="var(--ink2)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-  g+=ma.map((m,i)=>`<circle cx="${cx(i).toFixed(1)}" cy="${y(m).toFixed(1)}" r="${i===sel?3.5:2.2}" fill="var(--card)" stroke="var(--ink2)" stroke-width="1.8"/>`).join("");
-  g+=ps.map((x,i)=>`<rect x="${(i*cw).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${H}" fill="transparent" data-csel="${v}:${i}" style="cursor:pointer"><title>${x.label} ${won(x.sum)}원</title></rect>`).join("");
-  const others=ps.filter((_,i)=>i!==sel), avg=others.length?others.reduce((s,x)=>s+x.sum,0)/others.length:0;
-  const diff=avg?Math.round((p.sum-avg)/avg*100):null, live=v!=="day"&&sel===ps.length-1;
-  return `<div class="sc-row">
-    <div class="sc-head"><b class="sc-unit">${{month:"월별",week:"주별",day:"일별"}[v]}</b><span class="sc-sel">${p.label}${live?" (진행 중)":""}</span><b class="sc-val">${korWon(p.sum)}</b>${diff!=null?`<span class="sc-diff" style="color:${(exp?diff>0:diff<0)?"var(--down)":"var(--up)"}">${diff>0?"+":""}${diff}%</span>`:""}</div>
-    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block" role="img" aria-label="${unit}별 ${exp?"지출":"수입"} 추이">${g}</svg>
-  </div>`;
 }
-function spendCharts(){
-  const exp=txView==="expense", col=exp?"var(--down)":"var(--up)";
-  return `<div class="card sc-card">${["month","week","day"].map(spendChart).join("")}
-    <div class="sc-legend"><span><i style="background:${col}"></i>${exp?"생활비":"수입"}</span>${exp?`<span><i style="background:${col};opacity:.3"></i>고정비 (일별은 제외)</span>`:""}<span><i class="ln"></i>최근 3기간 평균</span><span class="faint">%는 다른 기간 평균 대비</span></div>
+// 한 장의 막대그래프: 월 막대(파랑) 바로 옆에 그 달의 주 막대(황토)들. 연한 윗부분은 고정비. 옆으로 스크롤.
+function mwChart(){
+  const data=mwData(); if(!data.length) return "";
+  const exp=txView==="expense", cm="var(--c-month)", cw="var(--c-week)";
+  const H=160, top=10, bot=24, base=H-bot, MB=30, WB=13, WG=3, GAP=30, L=6;
+  const max=Math.max(...data.map(d=>d.sum),1), y=v=>top+(1-v/max)*(base-top);
+  const last=data[data.length-1], pick=chartPick||{v:"month",k:last.m};
+  const bar=(x,w,v,fx,col,on,key,title)=>{
+    let s="";
+    if(v>0){
+      const vTop=y(v-fx), op=on?1:0.5;
+      if(v-fx>0) s+=`<rect x="${x}" y="${vTop.toFixed(1)}" width="${w}" height="${Math.max(1,base-vTop).toFixed(1)}" rx="3" fill="${col}" opacity="${op}"/>`;
+      if(fx>0){ const fTop=y(v); s+=`<rect x="${x}" y="${fTop.toFixed(1)}" width="${w}" height="${Math.max(1,vTop-fTop-(v-fx>0?2:0)).toFixed(1)}" rx="3" fill="${col}" opacity="${op*0.35}"/>`; }
+    }
+    if(on) s+=`<rect x="${x-2}" y="${top-6}" width="${w+4}" height="${base-top+6}" rx="5" fill="none" stroke="${col}" stroke-width="1.5" stroke-dasharray="3 3" opacity=".7"/>`;
+    return s+`<rect x="${x-WG}" y="0" width="${w+WG*2}" height="${H}" fill="transparent" data-pick="${key}" style="cursor:pointer"><title>${title}</title></rect>`;
+  };
+  let x=L, g="", selInfo=null;
+  data.forEach(d=>{
+    const gx=x, onM=pick.v==="month"&&pick.k===d.m;
+    g+=bar(x,MB,d.sum,d.fixed,cm,onM,`month|${d.m}`,`${+d.m.slice(5,7)}월 ${won(d.sum)}원`);
+    if(onM) selInfo={label:`${d.m.slice(0,4)!==today().slice(0,4)?d.m.slice(0,4)+"년 ":""}${+d.m.slice(5,7)}월`,sum:d.sum,fixed:d.fixed,peers:data.filter(o=>o!==d).map(o=>o.sum),live:d===last,unit:"달"};
+    x+=MB+6;
+    d.weeks.forEach(w=>{
+      const onW=pick.v==="week"&&pick.k===w.k&&pick.m===d.m;
+      g+=bar(x,WB,w.sum,w.fixed,cw,onW,`week|${w.k}|${d.m}`,`${+d.m.slice(5,7)}월 ${w.n}주 ${won(w.sum)}원`);
+      if(onW) selInfo={label:`${+d.m.slice(5,7)}월 ${w.n}주차 · ${md(w.s)}–${md(w.e)}`,sum:w.sum,fixed:w.fixed,peers:data.flatMap(o=>o.weeks).filter(o=>o!==w).map(o=>o.sum),live:w.e>=today(),unit:"주"};
+      x+=WB+WG;
+    });
+    g+=`<line x1="${gx}" x2="${x-WG}" y1="${base+5}" y2="${base+5}" stroke="var(--ink3)" stroke-width="1.5" stroke-linecap="round" opacity=".5"/><text x="${gx}" y="${H-4}" font-size="11.5" text-anchor="start" fill="var(--ink2)" font-weight="700">${+d.m.slice(5,7)}월</text>`;
+    x+=GAP-WG;
+  });
+  const W=Math.round(x-GAP+L+WG);
+  g=`<line x1="0" x2="${W}" y1="${base}" y2="${base}" stroke="var(--line)"/>`+g;
+  const s=selInfo||{label:"",sum:0,fixed:0,peers:[],unit:"달"};
+  const avg=s.peers.length?s.peers.reduce((a,b)=>a+b,0)/s.peers.length:0, diff=avg?Math.round((s.sum-avg)/avg*100):null;
+  return `<div class="card sc-card">
+    <div class="rowline" style="align-items:flex-end"><div style="min-width:0"><div class="lbl" style="margin:0">${s.label} ${exp?"지출":"수입"}${s.live?" (진행 중)":""}</div><div class="sc-big">${won(s.sum)}<small>원</small></div></div>
+      ${diff!=null?`<span class="faint" style="text-align:right;flex:0 0 auto">다른 ${s.unit} 평균 ${korWon(avg)}<br><b style="color:${(exp?diff>0:diff<0)?"var(--down)":"var(--up)"}">${diff>0?"+":""}${diff}%</b></span>`:""}</div>
+    ${exp&&s.fixed?`<div class="faint" style="margin-top:2px">고정비 ${korWon(s.fixed)} 포함 · 생활비 ${korWon(s.sum-s.fixed)}</div>`:""}
+    <div class="mw-scroll"><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="월별·주별 ${exp?"지출":"수입"}">${g}</svg></div>
+    <div class="sc-legend"><span><i style="background:${cm}"></i>월별</span><span><i style="background:${cw}"></i>주별 (그 달의 1주, 2주…)</span>${exp?`<span class="faint">연한 윗부분 = 고정비</span>`:""}</div>
   </div>`;
 }
 // 받침 있으면 "이", 없으면 "가".
@@ -1704,7 +1728,7 @@ function render(){
       <button role="tab" aria-selected="${txView==="expense"}" data-txview="expense">지출</button>
       <button role="tab" aria-selected="${txView==="income"}" data-txview="income">수입</button>
     </div>`;
-    h+=spendCharts();
+    h+=mwChart();
     if(txView==="expense") h+=spendAdvice();
 
     if(txView==="income"){
@@ -1906,6 +1930,13 @@ function render(){
       <div class="field" style="margin-top:12px"><div class="lbl">기록 탭에 보일 시작일</div><input type="date" id="recordsFrom" value="${recordsFrom()}" max="${today()}"></div>
       <div class="faint">이 날짜 이전 기록은 기록 탭에서만 숨겨요. 지워지지 않고 순자산 계산에도 그대로 쓰여요. 비우면 전부 보여요.</div></div>
 
+    <div class="sec">기준 금액</div>
+    <div class="card">
+      <div class="field"><div class="lbl">비상금 목표</div><input type="text" class="amt" inputmode="numeric" data-basic="emergency" value="${basics().emergency?won(basics().emergency):""}" placeholder="비우면 월 지출 3~6개월 기준"></div>
+      <div class="field"><div class="lbl">매달 저축 목표</div><input type="text" class="amt" inputmode="numeric" data-basic="monthlySave" value="${basics().monthlySave?won(basics().monthlySave):""}" placeholder="예: 500,000"></div>
+      <div class="faint">재무 건강, 재무 분석, 갈아타기 계산기에 이 금액이 기준으로 쓰여요. 비상금은 현금·예금처럼 바로 쓸 수 있는 돈과 비교해요.</div>
+    </div>
+
 
     <div class="sec" id="accountSec">계정 (기기 간 동기화)</div>
     <div class="card">${accountCard()}</div>
@@ -1952,11 +1983,11 @@ function render(){
 /* ══════════════ 이벤트 바인딩 ══════════════ */
 function bind(){
   const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
-  $$("[data-tab]").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;notice="";render()});
+  $$("[data-tab]").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;notice="";window.__mwX=null;render()});
   $$("[data-quick]").forEach(b=>b.onclick=()=>{txView=b.dataset.quick;tab="기록";render();setTimeout(()=>document.querySelector("#txin")?.focus(),0)});
   $$("[data-gosummary]").forEach(b=>b.onclick=()=>{tab="기록";render();setTimeout(()=>document.querySelector("#lastSummary")?.scrollIntoView({behavior:"smooth"}),0)});
   $$("[data-openbudget]").forEach(b=>b.onclick=()=>{tab="설정";render();setTimeout(()=>document.querySelector("#budgetSettings")?.scrollIntoView({behavior:"smooth"}),0)});
-  $$("[data-txview]").forEach(b=>b.onclick=()=>{txView=b.dataset.txview;chartSel={};render()});
+  $$("[data-txview]").forEach(b=>b.onclick=()=>{txView=b.dataset.txview;chartPick=null;render()});
   $$("[data-acc]").forEach(b=>b.onclick=()=>{openDebt=openDebt===b.dataset.acc?null:b.dataset.acc;render()});
 
   const ta=$("#txin");
@@ -1981,7 +2012,10 @@ function bind(){
   if($("#toggleAssetEdit")) $("#toggleAssetEdit").onclick=()=>{assetEdit=!assetEdit;render()};
   $$("[data-openanalysis]").forEach(b=>b.onclick=()=>{tab="분석";notice="";render();scrollTo(0,0);if(analysisStale()&&aiConfigured())runAnalysis();});
   $$("[data-runanalysis]").forEach(b=>b.onclick=()=>runAnalysis());
-  $$("[data-csel]").forEach(b=>b.onclick=()=>{const [v,i]=b.dataset.csel.split(":");chartSel={...chartSel,[v]:+i};pView=v;render()});
+  // 월·주 그래프: 막대를 누르면 그 기간을 고르고, 가로 스크롤 위치는 유지한다 (처음엔 맨 오른쪽 = 최근).
+  $$("[data-pick]").forEach(b=>b.onclick=()=>{const [v,k,m]=b.dataset.pick.split("|");chartPick={v,k,m};pView=v;window.__mwX=$(".mw-scroll")?.scrollLeft;render()});
+  if($(".mw-scroll")){ const sc=$(".mw-scroll"); sc.scrollLeft=window.__mwX!=null?window.__mwX:sc.scrollWidth; }
+  $$("[data-basic]").forEach(el=>el.onchange=async()=>{S.basics={...basics(),[el.dataset.basic]:+el.value.replace(/[^\d]/g,"")||0};if(S.analysis)S.analysis.stale=true;await commit()});
   if($("#recordsFrom")) $("#recordsFrom").onchange=async e=>{S.settings.recordsFrom=e.target.value||"";await commit()};
   if($("#budgetTotal")) $("#budgetTotal").onchange=async e=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.monthlyTotal=+e.target.value.replace(/[^\d]/g,"")||0;await commit()};
   $$("[data-budget-cat]").forEach(el=>el.onchange=async()=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.categories=S.budgets.categories||{};S.budgets.categories[el.dataset.budgetCat]=+el.value.replace(/[^\d]/g,"")||0;await commit()});
