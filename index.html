@@ -321,6 +321,13 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 .an-list li{margin-bottom:5px}
 .an-list.act{color:var(--ink);font-weight:600}
 .an-sec .pg-top{gap:8px}
+.sc-big{font-size:25px;font-weight:850;letter-spacing:-.035em;margin-top:2px}
+.sc-big small{font-size:14px;margin-left:1px}
+.sc-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--ink2)}
+.sc-legend span{display:flex;align-items:center;gap:5px}
+.sc-legend i{display:inline-block;width:10px;height:10px;border-radius:3px}
+.sc-legend i.ln{height:2px;width:14px;border-radius:1px;background:var(--ink2)}
+.sc-advice .check-row{padding:8px 0}
 @media(max-width:380px){.hero-copy{max-width:78%}.mascot{width:88px;height:88px;right:8px}.tabs button{font-size:11.5px}.entry .cat{display:none}}
 </style>
 </head>
@@ -434,7 +441,7 @@ const DEFAULT={
     supabaseUrl:"",supabaseKey:"",syncCode:"",theme:"auto"}
 };
 let S=JSON.parse(JSON.stringify(DEFAULT));
-let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false, contribFormOpen=false, divFormOpen=false, evFormOpen=false, txQuery="", pView="month";
+let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false, contribFormOpen=false, divFormOpen=false, evFormOpen=false, txQuery="", pView="month", chartSel=null;
 let syncState={status:"local",error:""};
 
 /* ══════════════ 저장소 (Claude storage → localStorage → Google Drive) ══════════════ */
@@ -1331,6 +1338,81 @@ function analysisPage(){
   h+=`<div class="faint" style="margin:12px 4px">AI가 앱에 기록된 숫자만 보고 만든 참고용 분석이에요. 세법·한도는 바뀔 수 있으니 큰 결정 전에는 금융기관이나 세무 상담으로 확인하세요.</div>`;
   return h;
 }
+// 월(6개월)·주(8주)·일(14일) 단위 지출(또는 수입) 합계. 기록이 없는 기간도 0으로 넣어 추이가 끊기지 않게 한다.
+function periodSeries(){
+  const from=recordsFrom(), t0=today(), exp=txView==="expense";
+  let ps;
+  if(pView==="month") ps=recentMonths(6).map(m=>({s:m+"-01",e:m+"-31",short:`${+m.slice(5,7)}월`,label:`${+m.slice(5,7)}월`}));
+  else if(pView==="week"){ const w0=weekStart(t0); ps=Array.from({length:8},(_,i)=>{const w=addDate(w0,-7*(7-i)),e=addDate(w,6);return {s:w,e,short:`${+w.slice(5,7)}/${+w.slice(8,10)}`,label:`${md(w)}–${md(e)}`};}); }
+  else ps=Array.from({length:14},(_,i)=>{const d=addDate(t0,-(13-i));return {s:d,e:d,short:String(+d.slice(8,10)),label:fmtDate(d)};});
+  if(from) ps=ps.filter(p=>p.e>=from);
+  const tx=S.tx.filter(t=>t.type===txView&&(!exp||!t.famRepay)&&!(exp&&pView==="day"&&isFixed(t))&&(!from||t.date>=from));
+  ps.forEach(p=>{const it=tx.filter(t=>t.date>=p.s&&t.date<=p.e);p.sum=it.reduce((s,t)=>s+t.amount,0);p.fixed=exp?it.filter(isFixed).reduce((s,t)=>s+t.amount,0):0;});
+  return ps;
+}
+// 막대 = 기간별 합계(지출이면 고정비는 연하게 위에 쌓음), 꺾은선 = 최근 3기간 평균(추이).
+// 막대를 누르면 위 숫자가 그 기간으로 바뀐다.
+function spendChart(){
+  const ps=periodSeries(); if(!ps.length) return "";
+  const exp=txView==="expense", col=exp?"var(--down)":"var(--up)", unit={month:"달",week:"주",day:"일"}[pView];
+  const sel=chartSel!=null&&chartSel<ps.length?chartSel:ps.length-1, p=ps[sel];
+  const ma=ps.map((_,i)=>{const w=ps.slice(Math.max(0,i-2),i+1);return w.reduce((s,x)=>s+x.sum,0)/w.length;});
+  const W=330,H=150,top=12,bot=20,n=ps.length,cw=W/n,bw=Math.min(26,cw*0.62);
+  const max=Math.max(...ps.map(x=>x.sum),...ma,1), base=H-bot, y=v=>top+(1-v/max)*(base-top);
+  const cx=i=>(i+0.5)*cw;
+  let g="";
+  ps.forEach((x,i)=>{
+    const op=i===sel?1:0.45, x0=(cx(i)-bw/2).toFixed(1);
+    if(x.sum>0){
+      const vTop=y(x.sum-x.fixed);
+      if(x.sum-x.fixed>0) g+=`<rect x="${x0}" y="${vTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1,base-vTop).toFixed(1)}" rx="3" fill="${col}" opacity="${op}"/>`;
+      if(x.fixed>0){ const fTop=y(x.sum); g+=`<rect x="${x0}" y="${fTop.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1,vTop-fTop-(x.sum-x.fixed>0?2:0)).toFixed(1)}" rx="3" fill="${col}" opacity="${op*0.3}"/>`; }
+    }
+    if(n<=8||i%2===(n-1)%2) g+=`<text x="${cx(i).toFixed(1)}" y="${H-5}" font-size="10" text-anchor="middle" fill="${i===sel?"var(--ink)":"var(--ink3)"}" font-weight="${i===sel?700:400}">${x.short}</text>`;
+  });
+  const line=ma.map((v,i)=>`${i?"L":"M"}${cx(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  g+=`<line x1="0" x2="${W}" y1="${base}" y2="${base}" stroke="var(--line)"/>`;
+  g+=`<path d="${line}" fill="none" stroke="var(--ink2)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  g+=ma.map((v,i)=>`<circle cx="${cx(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${i===sel?4:2.5}" fill="var(--card)" stroke="var(--ink2)" stroke-width="2"/>`).join("");
+  g+=ps.map((x,i)=>`<rect x="${(i*cw).toFixed(1)}" y="0" width="${cw.toFixed(1)}" height="${H}" fill="transparent" data-csel="${i}" style="cursor:pointer"><title>${x.label} ${won(x.sum)}원</title></rect>`).join("");
+  // 비교: 선택한 기간 vs 나머지 기간 평균
+  const others=ps.filter((_,i)=>i!==sel), avg=others.length?others.reduce((s,x)=>s+x.sum,0)/others.length:0;
+  const diff=avg?Math.round((p.sum-avg)/avg*100):null;
+  return `<div class="card sc-card">
+    <div class="rowline" style="align-items:flex-end"><div><div class="lbl" style="margin:0">${p.label} ${exp?"지출":"수입"}${pView!=="day"&&sel===ps.length-1?" · 진행 중":""}</div><div class="sc-big">${won(p.sum)}<small>원</small></div></div>
+      ${diff!=null?`<span class="faint" style="text-align:right">다른 ${unit} 평균 ${korWon(avg)}<br><b style="color:${(exp?diff>0:diff<0)?"var(--down)":"var(--up)"}">${diff>0?"+":""}${diff}%</b></span>`:""}</div>
+    ${exp&&p.fixed?`<div class="faint" style="margin-top:2px">고정비 ${korWon(p.fixed)} 포함 · 생활비 ${korWon(p.sum-p.fixed)}</div>`:""}
+    <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;margin-top:10px" role="img" aria-label="${unit}별 ${exp?"지출":"수입"} 추이">${g}</svg>
+    <div class="sc-legend"><span><i style="background:${col}"></i>${exp?"생활비":"수입"}</span>${exp&&pView!=="day"?`<span><i style="background:${col};opacity:.3"></i>고정비</span>`:exp?`<span class="faint">고정비 제외</span>`:""}<span><i class="ln"></i>최근 3${unit} 평균</span></div>
+  </div>`;
+}
+// 받침 있으면 "이", 없으면 "가".
+const iGa=w=>{const c=w.charCodeAt(w.length-1);return c>=0xAC00&&c<=0xD7A3&&(c-0xAC00)%28?"이":"가";};
+// 지금 지출 상황으로 짧은 조언 2~3줄을 만든다 (AI 없이 숫자로).
+function spendAdvice(){
+  const t0=today(), out=[], bi=budgetInfo();
+  const varSum=(s,e)=>S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&!isFixed(t)&&t.date>=s&&t.date<=e).reduce((a,t)=>a+t.amount,0);
+  if(bi.total){
+    const days=Math.max(1,bi.daysLeft+1);
+    if(bi.remaining<=0) out.push(["bad",`생활비를 ${korWon(-bi.remaining)} 넘겼어요. ${md(bi.range.end)}까지는 꼭 필요한 것만 써요.`]);
+    else out.push([bi.pct>bi.timePct+10?"warn":"ok",`남은 생활비 ${korWon(bi.remaining)} → ${md(bi.range.end)}까지 <b>하루 ${korWon(Math.floor(bi.remaining/days/1000)*1000)}</b> 이하로 쓰면 돼요.`]);
+  }else out.push(["info",`설정에서 한 달 생활비를 정하면 하루에 얼마 써도 되는지 알려드려요.`]);
+  // 이번 주: 같은 요일까지 평소(최근 4주)와 비교
+  const w0=weekStart(t0), dayN=dayDiff(w0,t0)+1, cur=varSum(w0,t0);
+  const prev=[1,2,3,4].map(k=>{const s=addDate(w0,-7*k);return varSum(s,addDate(s,dayN-1));}), pAvg=prev.reduce((a,b)=>a+b,0)/4;
+  if(pAvg>0){
+    const r=cur/pAvg;
+    out.push([r>1.2?"warn":"ok",r>1.2?`이번 주 ${dayN}일 동안 ${korWon(cur)} — 평소 이맘때(${korWon(pAvg)})보다 ${Math.round((r-1)*100)}% 많아요. 남은 주말·평일은 조금 줄여요.`
+      :`이번 주 ${dayN}일 동안 ${korWon(cur)} — 평소 이맘때(${korWon(pAvg)})${r<0.8?"보다 적게 쓰고 있어요. 좋아요!":"와 비슷해요."}`]);
+  }
+  // 이번 달 가장 많이 늘어난 범주 (지난달 같은 날짜까지 대비)
+  const m=ym(t0), pm=recentMonths(2)[0], d=+t0.slice(8,10), last=new Date(+pm.slice(0,4),+pm.slice(5,7),0).getDate();
+  const by=(s,e)=>{const o={};S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&!isFixed(t)&&t.date>=s&&t.date<=e).forEach(t=>o[t.cat]=(o[t.cat]||0)+t.amount);return o;};
+  const a=by(m+"-01",t0), b=by(pm+"-01",`${pm}-${pad(Math.min(d,last))}`);
+  const top=Object.keys(a).map(k=>({k,d:a[k]-(b[k]||0)})).sort((x,y)=>y.d-x.d)[0];
+  if(top&&top.d>=30000&&Object.keys(b).length) out.push(["warn",`<b>${esc(top.k)}</b>${iGa(top.k)} 지난달 이맘때보다 ${korWon(top.d)} 많아요. 이번 달은 ${esc(top.k)}부터 줄여 보세요.`]);
+  return `<div class="card sc-advice"><strong>지출 조언</strong>${out.slice(0,3).map(([k,s])=>`<div class="check-row"><i class="check-dot ${k}"></i><span>${s}</span></div>`).join("")}</div>`;
+}
 // 한 달 생활비(총액)만 쓴다. 예전에 넣어둔 카테고리별 예산은 무시한다.
 // 생활비 예산은 변동비만 비교한다 (고정비와 부모님 상환은 제외).
 function budgetInfo(){
@@ -1614,6 +1696,9 @@ function render(){
       <button role="tab" aria-selected="${txView==="expense"}" data-txview="expense">지출</button>
       <button role="tab" aria-selected="${txView==="income"}" data-txview="income">수입</button>
     </div>`;
+    h+=`<div class="period-switch" role="tablist" aria-label="보기 단위">${[["month","월별"],["week","주별"],["day","일별"]].map(([v,l])=>`<button role="tab" aria-selected="${pView===v}" data-pview="${v}">${l}</button>`).join("")}</div>`;
+    h+=spendChart();
+    if(txView==="expense") h+=spendAdvice();
 
     if(txView==="income"){
       h+=`<div class="sec">이번 달 수입</div>${pie(incRows,incTot,132,true,"이번 달 수입 기록이 없습니다.")}
@@ -1631,7 +1716,6 @@ function render(){
         h+=`<div class="card" style="padding:3px 15px 5px"><div class="daterow">${fmtDate(d)}</div>${items.map(txEntry).join("")}</div>`;
       });
     }else{
-      h+=`<div class="period-switch" role="tablist" aria-label="보기 단위">${[["month","월별"],["week","주별"],["day","일별"]].map(([v,l])=>`<button role="tab" aria-selected="${pView===v}" data-pview="${v}">${l}</button>`).join("")}</div>`;
       h+=periodList();
     }
     if(!recordsFrom()||recentMonths(2)[0]>=recordsFrom().slice(0,7)) h+=`<div class="sec" id="lastSummary">지난달 결산</div>`+(monthSummary(recentMonths(2)[0])||`<div class="faint">지난달 기록이 없어요.</div>`);
@@ -1865,7 +1949,7 @@ function bind(){
   $$("[data-quick]").forEach(b=>b.onclick=()=>{txView=b.dataset.quick;tab="기록";render();setTimeout(()=>document.querySelector("#txin")?.focus(),0)});
   $$("[data-gosummary]").forEach(b=>b.onclick=()=>{tab="기록";render();setTimeout(()=>document.querySelector("#lastSummary")?.scrollIntoView({behavior:"smooth"}),0)});
   $$("[data-openbudget]").forEach(b=>b.onclick=()=>{tab="설정";render();setTimeout(()=>document.querySelector("#budgetSettings")?.scrollIntoView({behavior:"smooth"}),0)});
-  $$("[data-txview]").forEach(b=>b.onclick=()=>{txView=b.dataset.txview;render()});
+  $$("[data-txview]").forEach(b=>b.onclick=()=>{txView=b.dataset.txview;chartSel=null;render()});
   $$("[data-acc]").forEach(b=>b.onclick=()=>{openDebt=openDebt===b.dataset.acc?null:b.dataset.acc;render()});
 
   const ta=$("#txin");
@@ -1890,7 +1974,8 @@ function bind(){
   if($("#toggleAssetEdit")) $("#toggleAssetEdit").onclick=()=>{assetEdit=!assetEdit;render()};
   $$("[data-openanalysis]").forEach(b=>b.onclick=()=>{tab="분석";notice="";render();scrollTo(0,0);if(analysisStale()&&aiConfigured())runAnalysis();});
   $$("[data-runanalysis]").forEach(b=>b.onclick=()=>runAnalysis());
-  $$("[data-pview]").forEach(b=>b.onclick=()=>{pView=b.dataset.pview;render()});
+  $$("[data-pview]").forEach(b=>b.onclick=()=>{pView=b.dataset.pview;chartSel=null;render()});
+  $$("[data-csel]").forEach(b=>b.onclick=()=>{chartSel=+b.dataset.csel;render()});
   if($("#recordsFrom")) $("#recordsFrom").onchange=async e=>{S.settings.recordsFrom=e.target.value||"";await commit()};
   if($("#budgetTotal")) $("#budgetTotal").onchange=async e=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.monthlyTotal=+e.target.value.replace(/[^\d]/g,"")||0;await commit()};
   $$("[data-budget-cat]").forEach(el=>el.onchange=async()=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.categories=S.budgets.categories||{};S.budgets.categories[el.dataset.budgetCat]=+el.value.replace(/[^\d]/g,"")||0;await commit()});
