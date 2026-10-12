@@ -184,8 +184,8 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 .asset-kicker strong{font-size:20px;letter-spacing:-.03em}
 .asset-kicker span{font-size:13px;color:var(--ink2)}
 .quick-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0}
-.quick-btn{border:0;border-radius:17px;padding:15px 12px;background:var(--card);box-shadow:0 5px 18px rgba(25,31,40,.055);font-size:14px;font-weight:800;text-align:left}
-.quick-btn b{display:block;font-size:21px;margin-bottom:5px}
+.quick-btn{border:0;border-radius:15px;padding:12px 14px;background:var(--card);box-shadow:0 5px 18px rgba(25,31,40,.055);font-size:14px;font-weight:800;text-align:left}
+.quick-btn b{display:block;font-size:17px}
 .quick-btn.expense b{color:var(--down)}.quick-btn.income b{color:var(--up)}
 .more-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px}
 .more-card{border:0;background:var(--card);border-radius:20px;padding:18px;text-align:left;min-height:120px;box-shadow:0 5px 20px rgba(25,31,40,.055)}
@@ -285,6 +285,20 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 :root[data-theme="dark"] .health-badge.warn{background:#3A2F17;color:#F5C76B}
 :root[data-theme="dark"] .health-badge.bad{background:#3D1F1F;color:#F2A3A3}
 .search-box{margin:16px 0 4px}.search-box input{width:100%}
+.kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 4px}
+.kpi{background:var(--surface2);border-radius:12px;padding:9px 10px;min-width:0}
+.kpi .lbl{margin:0 0 2px;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi b{display:block;font-size:15px;font-weight:800;letter-spacing:-.03em;white-space:nowrap}
+.mc-budget{margin-top:12px;padding-top:12px;border-top:1px solid var(--line2)}
+.mc-left{font-size:20px;font-weight:850;letter-spacing:-.03em}
+.mc-alerts{margin-top:10px}
+.mc-alerts .check-row{padding:7px 0}
+.mc-more{margin-top:8px}
+.mc-more>summary{cursor:pointer;font-size:12.5px;color:var(--ink3);padding:6px 0;list-style:none}
+.mc-more>summary::-webkit-details-marker{display:none}
+.mc-more>summary::after{content:" ▾"}
+.mc-more[open]>summary::after{content:" ▴"}
+.mc-more .check-row{padding:7px 0;font-size:13px}
 @media(max-width:380px){.hero-copy{max-width:78%}.mascot{width:88px;height:88px;right:8px}.tabs button{font-size:11.5px}.entry .cat{display:none}}
 </style>
 </head>
@@ -784,39 +798,49 @@ function monthlyPace(){
   if(!done.length) return null;
   return {v:done.reduce((s,a)=>s+a.base+a.side-a.expense,0)/done.length, basis:"최근 가계부 수입−지출"};
 }
-// AI 없이 숫자만으로 이번 달 상태를 점검한다.
+// 홈 "이번 달" 카드: 핵심 숫자 3개 + 남은 생활비 + 꼭 볼 알림(최대 2개). 나머지는 "자세히"에 접어 둔다.
 function checkCard(c,pace){
   const now=today(), m=ym(now), day=+now.slice(8,10), pm=recentMonths(2)[0];
-  const cur=monthAgg(m), prev=monthAgg(pm);
-  const inc=cur.base+cur.side, save=inc-cur.expense, rate=inc?save/inc*100:null;
-  const pinc=prev.base+prev.side, prate=pinc?(pinc-prev.expense)/pinc*100:null;
-  const rows=[];
-  rows.push(...flowRows(m));
-  // 지난달 같은 날짜까지와 비교해 가장 많이 늘어난 지출 범주
-  const spentBy=(from,to)=>{const o={};S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&t.date>=from&&t.date<=to).forEach(t=>o[t.cat]=(o[t.cat]||0)+t.amount);return o;};
+  const f=moneyFlow(m), bi=budgetInfo(), spent=f.fixed+f.variable;
+  const alerts=[], more=[...flowRows(m)];
+  // 생활비 속도
+  if(bi.total){
+    if(bi.pct>100) alerts.push(["bad",`생활비 ${korWon(-bi.remaining)} 초과`]);
+    else if(bi.pct>bi.timePct+10) alerts.push(["warn",`생활비가 조금 빨라요 <span class="faint">(${Math.round(bi.pct)}% 사용 · 기간 ${Math.round(bi.timePct)}% 지남)</span>`]);
+  }
+  // 지난달 같은 날짜까지보다 크게 늘어난 지출 범주
+  const spentBy=(from,to)=>{const o={};S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&!isFixed(t)&&t.date>=from&&t.date<=to).forEach(t=>o[t.cat]=(o[t.cat]||0)+t.amount);return o;};
   const lastDay=new Date(+pm.slice(0,4),+pm.slice(5,7),0).getDate();
   const a=spentBy(m+"-01",now), b=spentBy(pm+"-01",`${pm}-${pad(Math.min(day,lastDay))}`);
-  const diffs=Object.keys({...a,...b}).map(k=>({k,d:(a[k]||0)-(b[k]||0)})).sort((x,y)=>y.d-x.d);
-  if(diffs[0]&&diffs[0].d>=10000) rows.push(["warn",`<b>${esc(diffs[0].k)}</b> 지출이 지난달 같은 기간보다 ${won(diffs[0].d)}원 많아요`]);
-  else if(Object.keys(b).length) rows.push(["ok","지난달 같은 기간보다 크게 늘어난 지출이 없어요"]);
-  // 생활비는 한 달 총액 하나만 본다. 달이 지난 비율보다 많이 썼으면 경고.
-  const bi=budgetInfo();
-  if(bi.total){
-    const timePct=bi.timePct;
-    const k=bi.pct>100?"bad":bi.pct>timePct+10?"warn":"ok";
-    rows.push([k,`생활비 ${Math.round(bi.pct)}% 사용 <span class="faint">(${bi.range.payday>1?"이번 기간":"이번 달"} ${Math.round(timePct)}% 지남)</span>${k==="ok"?" · 속도 괜찮아요":k==="warn"?" · 조금 빨라요":" · 예산 초과"}`]);
-  }
-  const repaid=S.tx.filter(t=>t.famRepay&&ym(t.date)===m).reduce((s,t)=>s+t.amount,0);
+  const top=Object.keys({...a,...b}).map(k=>({k,d:(a[k]||0)-(b[k]||0)})).sort((x,y)=>y.d-x.d)[0];
+  if(top&&top.d>=50000) alerts.push(["warn",`<b>${esc(top.k)}</b> 지난달보다 ${korWon(top.d)} 더 씀`]);
+  // 부모님 상환 목표
   const fp=famPlan(c);
-  if(fp) rows.push([fp.thisMonth>=fp.need?"ok":"info",`부모님 상환 이번 달 ${won(fp.thisMonth)}원 / 목표 ${won(fp.need)}원 <span class="faint">(${fp.monthsLeft}개월 남음)</span>`]);
-  else if(repaid) rows.push(["info",`이번 달 부모님 상환 ${won(repaid)}원 · 남은 차입금 ${uk(c.familyDebt)}`]);
-  if(pace) rows.push(["info",`순자산이 한 달에 약 ${won(Math.abs(pace.v))}원씩 ${pace.v>=0?"늘고":"줄고"} 있어요 <span class="faint">(${pace.basis} 기준)</span>`]);
+  if(fp){
+    const row=`부모님 상환 ${korWon(fp.thisMonth)} / 목표 ${korWon(fp.need)} <span class="faint">(${fp.monthsLeft}개월 남음)</span>`;
+    if(fp.thisMonth<fp.need&&day>=20) alerts.push(["warn",row]); else more.push([fp.thisMonth>=fp.need?"ok":"info",row]);
+  }
+  // 연말 연금저축 공제 한도
   if(+m.slice(5,7)>=10){
     const tp=taxPlan(), left=Math.max(0,tp.pensionLimit-contribYearSum("연금저축"));
-    if(left) rows.push(["warn",`연금저축 세액공제 한도까지 ${korWon(left)} 남음 <span class="faint">(12월 31일 납입분까지, 다 채우면 약 ${won(Math.round(left*tp.creditRate/100))}원 더 돌려받아요)</span>`]);
+    if(left) alerts.push(["info",`연금저축 공제 한도 ${korWon(left)} 남음 <span class="faint">(연말까지 · 환급 약 ${korWon(left*tp.creditRate/100)})</span>`]);
   }
-  if(!rows.length) return `<div class="card"><strong>이번 달 점검</strong><div class="faint" style="margin-top:6px">기록이 쌓이면 저축률, 지출 변화, 예산 상태를 여기서 보여드려요.</div></div>`;
-  return `<div class="card"><strong>이번 달 점검</strong>${rows.map(([k,t])=>`<div class="check-row"><i class="check-dot ${k}"></i><span>${t}</span></div>`).join("")}</div>`;
+  if(pace) more.push(["info",`순자산 한 달 약 ${korWon(Math.abs(pace.v))}씩 ${pace.v>=0?"증가":"감소"} <span class="faint">(${pace.basis})</span>`]);
+  if(bi.fixed) more.push(["info",`고정비 ${korWon(bi.fixed)}는 생활비에서 빼고 계산해요`]);
+  const kpi=(l,v,col)=>`<div class="kpi"><div class="lbl">${l}</div><b${col?` style="color:${col}"`:""}>${v}</b></div>`;
+  const rowsHtml=list=>list.map(([k,t])=>`<div class="check-row"><i class="check-dot ${k}"></i><span>${t}</span></div>`).join("");
+  return `<div class="card month-card">
+    <div class="rowline"><strong>${+m.slice(5,7)}월</strong><span class="faint">${md(now)} 기준</span></div>
+    <div class="kpi-row">${kpi("수입",korWon(f.inc),"var(--up)")}${kpi("쓴 돈",korWon(spent),"var(--down)")}${kpi(f.fam?"남은 돈 · 상환 후":"남은 돈",(f.left>=0?"+":"−")+korWon(Math.abs(f.left)),f.left>=0?"var(--ink)":"var(--down)")}</div>
+    ${bi.total?`<div class="mc-budget">
+      <div class="rowline"><span class="lbl" style="margin:0">남은 생활비${bi.range.payday>1?` · ${md(bi.range.start)}–${md(bi.range.end)}`:""}</span><span class="faint">${bi.daysLeft}일 남음</span></div>
+      <div class="rowline" style="align-items:baseline;margin:2px 0 7px"><b class="mc-left" style="color:${bi.remaining<0?"var(--down)":"var(--ink)"}">${bi.remaining<0?"초과 ":""}${won(Math.abs(bi.remaining))}원</b><span class="faint">/ ${korWon(bi.total)}</span></div>
+      <div class="bar"><i style="width:${Math.min(100,bi.pct)}%;background:${bi.pct>100?"var(--down)":bi.pct>bi.timePct+10?"var(--amber)":"var(--accent)"}"></i></div>
+    </div>`:`<button class="link-btn" data-openbudget>한 달 생활비 정하기 →</button>`}
+    ${alerts.length?`<div class="mc-alerts">${rowsHtml(alerts.slice(0,2))}</div>`:""}
+    ${more.length||alerts.length>2?`<details class="mc-more"><summary>자세히</summary>${rowsHtml([...alerts.slice(2),...more])}</details>`:""}
+    ${day<=10&&monthAgg(pm).expense?`<button class="link-btn" data-gosummary>${+pm.slice(5,7)}월 결산 보기 →</button>`:""}
+  </div>`;
 }
 // 큰 금액을 "4억 2,632만원"처럼 한국식 단위로 보여준다.
 function korWon(n){
@@ -1318,8 +1342,8 @@ function render(){
     if(!signedIn()) h+=`<div class="budget-card"><div class="rowline" style="gap:12px"><div><strong>로그인하고 기록 지키기</strong><div class="faint" style="margin-top:5px">로그인하면 폰을 바꾸거나 앱을 다시 설치해도 기록이 그대로 보여요.</div></div><button class="edit-pill" data-openaccount style="flex:0 0 auto">로그인</button></div></div>`;
     else if(window.__needImport) h+=`<div class="note info">계정에 저장된 기록이 아직 없어요. 예전 동기화 코드를 쓰셨다면 <b>설정 → 계정</b>에서 옮겨올 수 있어요. <button class="btn tiny" data-openaccount style="margin-top:8px">옮겨오기</button></div>`;
     h+=`<div class="quick-grid" style="margin-top:0">
-      <button class="quick-btn expense" data-quick="expense"><b>− 지출</b>빠르게 기록하기</button>
-      <button class="quick-btn income" data-quick="income"><b>＋ 수입</b>빠르게 기록하기</button>
+      <button class="quick-btn expense" data-quick="expense"><b>− 지출 기록</b></button>
+      <button class="quick-btn income" data-quick="income"><b>＋ 수입 기록</b></button>
     </div>
 `;
     const goals=goalList(), pace=monthlyPace();
@@ -1356,22 +1380,11 @@ function render(){
     }
       // 목표 시뮬레이터: 매달 더 모으면 첫 번째 목표가 얼마나 당겨지는지
       const g0=goals[0], left0=g0?Math.max(0,goalNeeded(g0)-c.net):0;
-      if(left0&&pace&&!goalEdit) h+=`<div class="sim"><div class="rowline"><span class="lbl" style="margin:0">매달 더 모으면?</span><b id="simExtraOut">+0원</b></div>
+      if(left0&&pace&&!goalEdit) h+=`<details class="mc-more"><summary>매달 더 모으면 언제 도달할까?</summary><div class="sim"><div class="rowline"><span class="lbl" style="margin:0">매달 더 모으면?</span><b id="simExtraOut">+0원</b></div>
         <input type="range" id="simExtra" min="0" max="3000000" step="100000" value="0" data-left="${left0}" data-pace="${Math.max(0,pace.v)}" data-years="${g0.years}" aria-label="매달 추가로 모을 금액">
-        <div class="faint" id="simOut">${simText(left0,Math.max(0,pace.v),0,g0.years)}</div></div>`;
+        <div class="faint" id="simOut">${simText(left0,Math.max(0,pace.v),0,g0.years)}</div></div></details>`;
     if(!goalEdit&&goals.length) h+=`<button class="link-btn" data-opencalc>지금 집을 팔고 갈아타면 얼마짜리 집? 계산해 보기 →</button>`;
     h+=`</div>`;
-    const bi=budgetInfo();
-    if(bi.total){
-      h+=`<div class="budget-card"><div class="budget-top"><div><div class="lbl">${bi.range.payday>1?`남은 생활비 · ${md(bi.range.start)}–${md(bi.range.end)}`:"이번 달 남은 생활비"}</div><div class="budget-remaining" style="color:${bi.remaining<0?'var(--down)':'var(--ink)'}">${bi.remaining<0?'초과 ':''}${won(Math.abs(bi.remaining))}원</div></div><div class="muted">${Math.round(bi.pct)}% 사용</div></div>
-        <div class="bar"><i style="width:${Math.min(100,bi.pct)}%;background:${bi.pct>100?'var(--down)':bi.pct>80?'var(--amber)':'var(--accent)'}"></i></div>
-        <div class="rowline faint" style="margin-top:7px"><span>변동비 ${won(bi.spent)}원 사용 · ${bi.daysLeft}일 남음</span><span>한 달 생활비 ${won(bi.total)}원</span></div>
-        ${bi.fixed?`<div class="faint" style="margin-top:4px">고정비 ${won(bi.fixed)}원은 따로 빼고 계산했어요</div>`:""}
-      </div>`;
-    }else{
-      h+=`<div class="budget-card"><div class="rowline"><div><strong>한 달 생활비를 정해보세요</strong><div class="faint" style="margin-top:5px">남은 생활비를 홈에서 바로 확인할 수 있어요.</div></div><button class="edit-pill" data-openbudget>설정</button></div></div>`;
-    }
-    if(+today().slice(8,10)<=10) h+=monthSummary(recentMonths(2)[0]);
   }
 
   /* ───── 기록 ───── */
@@ -1480,7 +1493,7 @@ function render(){
       });
     }
     }
-    h+=`<div class="sec">지난달 결산</div>`+(monthSummary(recentMonths(2)[0])||`<div class="faint">지난달 기록이 없어요.</div>`);
+    h+=`<div class="sec" id="lastSummary">지난달 결산</div>`+(monthSummary(recentMonths(2)[0])||`<div class="faint">지난달 기록이 없어요.</div>`);
   }
 
   /* ───── 자산 ───── */
@@ -1705,6 +1718,7 @@ function bind(){
   const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
   $$("[data-tab]").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;notice="";render()});
   $$("[data-quick]").forEach(b=>b.onclick=()=>{txView=b.dataset.quick;tab="기록";render();setTimeout(()=>document.querySelector("#txin")?.focus(),0)});
+  $$("[data-gosummary]").forEach(b=>b.onclick=()=>{tab="기록";render();setTimeout(()=>document.querySelector("#lastSummary")?.scrollIntoView({behavior:"smooth"}),0)});
   $$("[data-openbudget]").forEach(b=>b.onclick=()=>{tab="설정";render();setTimeout(()=>document.querySelector("#budgetSettings")?.scrollIntoView({behavior:"smooth"}),0)});
   $$("[data-txview]").forEach(b=>b.onclick=()=>{txView=b.dataset.txview;render()});
   $$("[data-acc]").forEach(b=>b.onclick=()=>{openDebt=openDebt===b.dataset.acc?null:b.dataset.acc;render()});
