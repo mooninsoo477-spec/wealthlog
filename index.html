@@ -284,7 +284,7 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 :root[data-theme="dark"] .health-badge.ok{background:#123326;color:#5FD3A1}
 :root[data-theme="dark"] .health-badge.warn{background:#3A2F17;color:#F5C76B}
 :root[data-theme="dark"] .health-badge.bad{background:#3D1F1F;color:#F2A3A3}
-.search-box{margin:16px 0 4px}.search-box input{width:100%}
+.search-box{margin:16px 0 4px}.search-box input{width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid var(--line);border-radius:13px;background:var(--card);color:var(--ink);font:inherit;font-size:14px;outline:none}.search-box input:focus{border-color:var(--accent)}
 .kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 4px}
 .kpi{background:var(--surface2);border-radius:12px;padding:9px 10px;min-width:0}
 .kpi .lbl{margin:0 0 2px;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -301,6 +301,16 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 .mc-more>summary::after{content:" ▾"}
 .mc-more[open]>summary::after{content:" ▴"}
 .mc-more .check-row{padding:7px 0;font-size:13px}
+.period-switch{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:4px;background:var(--track);border-radius:13px;margin:14px 0 10px}
+.period-switch button{border:0;background:transparent;padding:8px;border-radius:10px;color:var(--ink2);font-size:13px;font-weight:700}
+.period-switch button[aria-selected="true"]{background:var(--card);color:var(--ink);box-shadow:0 2px 8px rgba(25,31,40,.08)}
+.pgroup>summary{padding:13px 16px}
+.pg{flex:1;min-width:0}
+.pg-top{display:flex;align-items:center;gap:8px}
+.pg-lbl{font-weight:750}
+.pg-top b{font-size:14.5px;font-weight:800;margin-left:6px}
+.pg-bar{height:5px;border-radius:3px;background:var(--line2);margin-top:8px;overflow:hidden}
+.pg-bar i{display:block;height:100%;border-radius:3px;opacity:.75}
 @media(max-width:380px){.hero-copy{max-width:78%}.mascot{width:88px;height:88px;right:8px}.tabs button{font-size:11.5px}.entry .cat{display:none}}
 </style>
 </head>
@@ -408,12 +418,12 @@ const DEFAULT={
   netWorthHistory:[],
   reports:{weekly:[],monthly:[],realEstate:[],stocks:[]},
   chat:[],
-  settings:{provider:"gemini",apiKey:"",modelChain:"",modelIndex:0,modelDate:"",
+  settings:{recordsFrom:"2026-08-01",provider:"gemini",apiKey:"",modelChain:"",modelIndex:0,modelDate:"",
     factchatKey:"",factchatBase:"https://factchat-cloud.mindlogic.ai/v1/gateway",factchatModel:"",
     supabaseUrl:"",supabaseKey:"",syncCode:"",theme:"auto"}
 };
 let S=JSON.parse(JSON.stringify(DEFAULT));
-let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false, contribFormOpen=false, divFormOpen=false, evFormOpen=false, txQuery="";
+let tab="홈", openDebt=null, pending=[], notice="", busy={}, sb=null, stockAcctTab="전체", txView="expense", assetEdit=false, goalEdit=false, editTxId=null, recFormOpen=false, contribFormOpen=false, divFormOpen=false, evFormOpen=false, txQuery="", pView="month";
 let syncState={status:"local",error:""};
 
 /* ══════════════ 저장소 (Claude storage → localStorage → Google Drive) ══════════════ */
@@ -1172,6 +1182,38 @@ function flowRows(ymS){
   if(f.inc) rows.push([f.grow>=0?"ok":"bad",`모으거나 갚은 돈 ${korWon(Math.max(0,f.grow))}${f.famDirect?"":` · 수입의 <b>${Math.round(f.grow/f.inc*100)}%</b>`} <span class="faint">(쓴 돈을 뺀 나머지, 순자산이 실제로 늘어난 몫)</span>`]);
   return rows;
 }
+// 기록 탭에 보일 시작일. 이 날짜 이전 기록은 지우지 않고 기록 탭에서만 숨긴다.
+const recordsFrom=()=>S.settings.recordsFrom||"";
+// 기록을 월·주·일 단위로 묶어 합계 막대로 보여주고, 누르면 그 기간 기록이 펼쳐진다.
+function periodList(){
+  const from=recordsFrom(), exp=txView==="expense";
+  const list=S.tx.filter(t=>t.type===txView&&(!from||t.date>=from));
+  const keyOf=pView==="month"?t=>ym(t.date):pView==="week"?t=>weekStart(t.date):t=>t.date;
+  const groups={}; list.forEach(t=>(groups[keyOf(t)]=groups[keyOf(t)]||[]).push(t));
+  const counted=t=>!exp||!t.famRepay;   // 부모님 상환은 지출 합계에서 뺀다
+  const rows=Object.keys(groups).sort().reverse().map(k=>({k,items:groups[k],sum:groups[k].filter(counted).reduce((s,t)=>s+t.amount,0)}));
+  if(!rows.length) return `<div class="empty-state">${recordMascot()}<br>${from?fmtDate(from)+" 이후 ":""}기록이 아직 없어요.</div>`;
+  const max=Math.max(...rows.map(r=>r.sum),1), y0=today().slice(0,4);
+  const label=k=>pView==="month"?`${k.slice(0,4)!==y0?k.slice(0,4)+"년 ":""}${+k.slice(5,7)}월`:pView==="week"?`${md(k)}–${md(addDate(k,6))}`:fmtDate(k);
+  const curK=keyOf({date:today()}), past=rows.filter(r=>r.k!==curK), avg=past.length?past.reduce((s,r)=>s+r.sum,0)/past.length:0;
+  const unit={month:"월",week:"주",day:"일"}[pView];
+  let h=avg?`<div class="faint" style="margin:2px 2px 8px">${unit} 평균 ${won(Math.round(avg))}원 <span style="opacity:.8">(${{month:"이번 달",week:"이번 주",day:"오늘"}[pView]} 제외)</span></div>`:"";
+  rows.forEach((r,i)=>{
+    const color=exp?"var(--down)":"var(--up)";
+    h+=`<details class="weekgroup pgroup"${i===0?" open":""}><summary><div class="pg">
+      <div class="pg-top"><span class="pg-lbl">${label(r.k)}</span><span class="weekmeta">${r.items.length}건</span><b>${won(r.sum)}원</b></div>
+      <div class="pg-bar"><i style="width:${r.sum/max*100}%;background:${color}"></i></div></div></summary><div class="weekbody">`;
+    if(exp&&pView!=="day"){
+      const cats={}; r.items.filter(counted).forEach(t=>cats[t.cat]=(cats[t.cat]||0)+t.amount);
+      const cr=Object.entries(cats).map(([cat,sum])=>({cat,sum})).sort((a,b)=>b.sum-a.sum);
+      if(cr.length>1) h+=`<div style="padding-top:12px">${catBars(cr,r.sum)}</div>`;
+    }
+    if(pView==="day") h+=r.items.map(txEntry).join("");
+    else dateGroups(r.items).forEach(([d,items])=>{h+=`<div class="daterow">${fmtDate(d)}</div>${items.map(txEntry).join("")}`;});
+    h+=`</div></details>`;
+  });
+  return h;
+}
 // 한 달 생활비(총액)만 쓴다. 예전에 넣어둔 카테고리별 예산은 무시한다.
 // 생활비 예산은 변동비만 비교한다 (고정비와 부모님 상환은 제외).
 function budgetInfo(){
@@ -1439,7 +1481,7 @@ function render(){
 
     const mRows=catRows(monthStart()),mTot=mRows.reduce((a,b)=>a+b.sum,0);
     const wRows=catRows(daysAgo(7)),wTot=wRows.reduce((a,b)=>a+b.sum,0);
-    const mths=recentMonths(6), aggs=mths.map(monthAgg);
+    const mths=recentMonths(6).filter(m=>!recordsFrom()||m>=recordsFrom().slice(0,7)), aggs=mths.map(monthAgg);
     const curAgg=monthAgg(ym(today()));
     const incRows=[];
     if(curAgg.base) incRows.push({cat:"본봉",sum:curAgg.base});
@@ -1455,10 +1497,7 @@ function render(){
       <button role="tab" aria-selected="${txView==="income"}" data-txview="income">수입</button>
     </div>`;
 
-    if(txView==="expense"){
-      h+=`<div class="sec">이번 달 범주별 지출</div>${catBars(mRows,mTot)}
-        <div class="sec">월별 지출 추세</div>${trendChart(mths,aggs.map(a=>a.expense),"#F04452","최근 6개월 지출")}`;
-    }else{
+    if(txView==="income"){
       h+=`<div class="sec">이번 달 수입</div>${pie(incRows,incTot,132,true,"이번 달 수입 기록이 없습니다.")}
         ${curAgg.side?`<div class="note info" style="margin-top:10px">이번 달 부수입 ${won(curAgg.side)}원 · 전체 수입의 ${Math.round(curAgg.side/incTot*100)}%</div>`:""}
         <div class="sec">월별 수입 흐름</div>${stackedIncome(mths,aggs.map(a=>a.base),aggs.map(a=>a.side))}
@@ -1467,35 +1506,17 @@ function render(){
 
     h+=`<div class="search-box"><input type="search" id="txSearch" placeholder="기록 검색 (내용·범주·금액)" value="${esc(txQuery)}" aria-label="기록 검색"></div>`;
     if(txQuery.trim()){
-      const found=searchTx(txQuery), ex=found.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0), inc=found.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
+      const found=searchTx(txQuery).filter(t=>!recordsFrom()||t.date>=recordsFrom()), ex=found.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0), inc=found.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0);
       h+=`<div class="sec">검색 결과 ${found.length}건</div><div class="faint" style="margin:-7px 2px 11px">${ex?`지출 ${won(ex)}원`:""}${ex&&inc?" · ":""}${inc?`수입 ${won(inc)}원`:""}${found.length>100?" · 최근 100건만 보여요":""}</div>`;
       if(!found.length) h+=`<div class="empty-state">찾는 기록이 없어요.</div>`;
       dateGroups(found.slice(0,100)).forEach(([d,items])=>{
         h+=`<div class="card" style="padding:3px 15px 5px"><div class="daterow">${fmtDate(d)}</div>${items.map(txEntry).join("")}</div>`;
       });
     }else{
-    const selected=S.tx.filter(t=>t.type===txView).sort((a,b)=>a.date<b.date?1:a.date>b.date?-1:0);
-    const cutoff=daysAgo(6);
-    const recent=selected.filter(t=>t.date>=cutoff);
-    const older=selected.filter(t=>t.date<cutoff);
-    h+=`<div class="sec">최근 7일 ${txView==="expense"?"지출":"수입"}</div>`;
-    if(!recent.length) h+=`<div class="empty-state">${recordMascot()}<br>최근 7일 기록이 아직 없어요.</div>`;
-    dateGroups(recent).forEach(([d,items])=>{
-      h+=`<div class="card" style="padding:3px 15px 5px"><div class="daterow">${fmtDate(d)}</div>${items.map(txEntry).join("")}</div>`;
-    });
-
-    if(older.length){
-      const weeks={}; older.forEach(t=>{const w=weekStart(t.date);(weeks[w]=weeks[w]||[]).push(t)});
-      h+=`<div class="sec">지난 기록</div><div class="faint" style="margin:-7px 2px 11px">일주일 단위로 묶었어요. 필요한 주만 펼쳐보세요.</div>`;
-      Object.keys(weeks).sort().reverse().forEach(w=>{
-        const items=weeks[w], total=items.reduce((a,b)=>a+b.amount,0), end=addDate(w,6);
-        h+=`<details class="weekgroup"><summary><span>${md(w)}–${md(end)}</span><span class="weekmeta">${items.length}건 · ${won(total)}원</span></summary><div class="weekbody">`;
-        dateGroups(items).forEach(([d,dayItems])=>{h+=`<div class="daterow">${fmtDate(d)}</div>${dayItems.map(txEntry).join("")}`;});
-        h+=`</div></details>`;
-      });
+      h+=`<div class="period-switch" role="tablist" aria-label="보기 단위">${[["month","월별"],["week","주별"],["day","일별"]].map(([v,l])=>`<button role="tab" aria-selected="${pView===v}" data-pview="${v}">${l}</button>`).join("")}</div>`;
+      h+=periodList();
     }
-    }
-    h+=`<div class="sec" id="lastSummary">지난달 결산</div>`+(monthSummary(recentMonths(2)[0])||`<div class="faint">지난달 기록이 없어요.</div>`);
+    if(!recordsFrom()||recentMonths(2)[0]>=recordsFrom().slice(0,7)) h+=`<div class="sec" id="lastSummary">지난달 결산</div>`+(monthSummary(recentMonths(2)[0])||`<div class="faint">지난달 기록이 없어요.</div>`);
   }
 
   /* ───── 자산 ───── */
@@ -1670,7 +1691,9 @@ function render(){
     <div class="card"><div class="field"><div class="lbl">한 달에 쓸 생활비</div><input type="text" class="amt" id="budgetTotal" inputmode="numeric" value="${S.budgets?.monthlyTotal?won(S.budgets.monthlyTotal):''}" placeholder="예: 2,000,000"></div>
       <div class="faint">고정비(매달 반복·고정비로 표시한 기록)와 부모님 상환은 빼고, 이번 기간 변동비만 이 금액과 비교해요.</div>
       <div class="field" style="margin-top:12px"><div class="lbl">월급날 (생활비 한 달의 시작)</div><select id="payday">${Array.from({length:28},(_,i)=>i+1).map(d=>`<option value="${d}"${(S.budgets?.payday||1)===d?" selected":""}>${d===1?"1일 (달력 기준)":d+"일"}</option>`).join("")}</select></div>
-      <div class="faint">예: 17일로 두면 17일부터 다음 달 16일까지를 한 달로 봐요.</div></div>
+      <div class="faint">예: 17일로 두면 17일부터 다음 달 16일까지를 한 달로 봐요.</div>
+      <div class="field" style="margin-top:12px"><div class="lbl">기록 탭에 보일 시작일</div><input type="date" id="recordsFrom" value="${recordsFrom()}" max="${today()}"></div>
+      <div class="faint">이 날짜 이전 기록은 기록 탭에서만 숨겨요. 지워지지 않고 순자산 계산에도 그대로 쓰여요. 비우면 전부 보여요.</div></div>
 
 
     <div class="sec" id="accountSec">계정 (기기 간 동기화)</div>
@@ -1745,6 +1768,8 @@ function bind(){
   if($("#rename")) $("#rename").onchange=async e=>{S.realEstate.name=e.target.value;await commit()};
   if($("#refreshprice")) $("#refreshprice").onclick=refreshPrice;
   if($("#toggleAssetEdit")) $("#toggleAssetEdit").onclick=()=>{assetEdit=!assetEdit;render()};
+  $$("[data-pview]").forEach(b=>b.onclick=()=>{pView=b.dataset.pview;render()});
+  if($("#recordsFrom")) $("#recordsFrom").onchange=async e=>{S.settings.recordsFrom=e.target.value||"";await commit()};
   if($("#budgetTotal")) $("#budgetTotal").onchange=async e=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.monthlyTotal=+e.target.value.replace(/[^\d]/g,"")||0;await commit()};
   $$("[data-budget-cat]").forEach(el=>el.onchange=async()=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.categories=S.budgets.categories||{};S.budgets.categories[el.dataset.budgetCat]=+el.value.replace(/[^\d]/g,"")||0;await commit()});
 
