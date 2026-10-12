@@ -331,6 +331,7 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 .mw-scroll svg{display:block}
 :root{--c-month:#3182F6;--c-week:#C98300}
 :root[data-theme="dark"]{--c-month:#3D85F0;--c-week:#BF8216}
+.fb-title{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin:16px 0 2px;font-size:13px;font-weight:800}
 .sc-big{font-size:25px;font-weight:850;letter-spacing:-.035em;margin-top:2px}
 .sc-big small{font-size:14px;margin-left:1px}
 .sc-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;font-size:11.5px;color:var(--ink2)}
@@ -1242,7 +1243,7 @@ function periodList(){
     if(exp&&pView!=="day"){
       const cats={}; r.items.filter(counted).forEach(t=>cats[t.cat]=(cats[t.cat]||0)+t.amount);
       const cr=Object.entries(cats).map(([cat,sum])=>({cat,sum})).sort((a,b)=>b.sum-a.sum);
-      if(cr.length>1) h+=`<div style="padding-top:12px">${catBars(cr,r.sum)}</div>`;
+      if(cr.length) h+=`<div style="padding:12px 0 4px">${pie(cr,r.items.filter(counted).reduce((s,t)=>s+t.amount,0),118,true,"")}</div>`;
     }
     if(pView==="day") h+=r.items.map(txEntry).join("");
     else dateGroups(r.items).forEach(([d,items])=>{h+=`<div class="daterow">${fmtDate(d)}</div>${items.map(txEntry).join("")}`;});
@@ -1374,48 +1375,50 @@ function mwData(){
     return {m,sum:sumF(mt),fixed:fixF(mt),weeks};
   });
 }
-// 한 장의 막대그래프: 월 막대(파랑) 바로 옆에 그 달의 주 막대(황토)들. 연한 윗부분은 고정비. 옆으로 스크롤.
+// 막대 위에 붙일 짧은 금액: 1억 이상 "1.2억", 1만 이상 "93만", 그 아래 "8천".
+const shortWon=v=>v>=1e8?(Math.round(v/1e7)/10)+"억":v>=1e4?Math.round(v/1e4)+"만":v>0?Math.round(v/1e3)+"천":"0";
+// 막대그래프 한 줄: 막대 위에 금액, 아래에 이름. 고른 막대만 진하게, 점선은 평균.
+function flowBars(items,col,selIdx,avg,minSlot){
+  const n=items.length, H=128, top=22, bot=34, base=H-bot, BW=30;
+  const W=Math.max(330,n*minSlot), slot=W/n, max=Math.max(...items.map(x=>x.v),avg||0,1);
+  const y=v=>top+(1-v/max)*(base-top), cx=i=>(i+0.5)*slot;
+  let g=`<line x1="0" x2="${W}" y1="${base}" y2="${base}" stroke="var(--line)"/>`;
+  items.forEach((x,i)=>{
+    const on=selIdx<0||i===selIdx, x0=(cx(i)-BW/2).toFixed(1);
+    if(x.v>0) g+=`<rect x="${x0}" y="${y(x.v).toFixed(1)}" width="${BW}" height="${Math.max(2,base-y(x.v)).toFixed(1)}" rx="6" fill="${col}" opacity="${on?1:0.3}"/>`;
+    g+=`<text x="${cx(i).toFixed(1)}" y="${(x.v>0?y(x.v):base)-6}" font-size="11" text-anchor="middle" fill="${on?"var(--ink)":"var(--ink3)"}" font-weight="${on?800:500}">${shortWon(x.v)}</text>`;
+    g+=`<text x="${cx(i).toFixed(1)}" y="${base+15}" font-size="11.5" text-anchor="middle" fill="${on?"var(--ink)":"var(--ink2)"}" font-weight="${on?800:600}">${x.label}</text>`;
+    if(x.sub) g+=`<text x="${cx(i).toFixed(1)}" y="${base+28}" font-size="9.5" text-anchor="middle" fill="var(--ink3)">${x.sub}</text>`;
+    g+=`<rect x="${(i*slot).toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${H}" fill="transparent" data-pick="${x.key}" style="cursor:pointer"><title>${x.label} ${won(x.v)}원</title></rect>`;
+  });
+  if(avg>0) g+=`<line x1="0" x2="${W}" y1="${y(avg).toFixed(1)}" y2="${y(avg).toFixed(1)}" stroke="var(--ink3)" stroke-dasharray="4 4" opacity=".7"/>`;
+  return `<div class="mw-scroll"><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" style="${W===330?"width:100%;height:auto":""}">${g}</svg></div>`;
+}
+// 지출 흐름: 위는 월별(최근 12개월, 옆으로 스크롤), 아래는 고른 달의 주별. 달을 누르면 아래 주별이 그 달로 바뀐다.
 function mwChart(){
   const data=mwData(); if(!data.length) return "";
-  const exp=txView==="expense", cm="var(--c-month)", cw="var(--c-week)";
-  const H=160, top=10, bot=24, base=H-bot, MB=30, WB=13, WG=3, GAP=30, L=6;
-  const max=Math.max(...data.map(d=>d.sum),1), y=v=>top+(1-v/max)*(base-top);
-  const last=data[data.length-1], pick=chartPick||{v:"month",k:last.m};
-  const bar=(x,w,v,fx,col,on,key,title)=>{
-    let s="";
-    if(v>0){
-      const vTop=y(v-fx), op=on?1:0.5;
-      if(v-fx>0) s+=`<rect x="${x}" y="${vTop.toFixed(1)}" width="${w}" height="${Math.max(1,base-vTop).toFixed(1)}" rx="3" fill="${col}" opacity="${op}"/>`;
-      if(fx>0){ const fTop=y(v); s+=`<rect x="${x}" y="${fTop.toFixed(1)}" width="${w}" height="${Math.max(1,vTop-fTop-(v-fx>0?2:0)).toFixed(1)}" rx="3" fill="${col}" opacity="${op*0.35}"/>`; }
-    }
-    if(on) s+=`<rect x="${x-2}" y="${top-6}" width="${w+4}" height="${base-top+6}" rx="5" fill="none" stroke="${col}" stroke-width="1.5" stroke-dasharray="3 3" opacity=".7"/>`;
-    return s+`<rect x="${x-WG}" y="0" width="${w+WG*2}" height="${H}" fill="transparent" data-pick="${key}" style="cursor:pointer"><title>${title}</title></rect>`;
-  };
-  let x=L, g="", selInfo=null;
-  data.forEach(d=>{
-    const gx=x, onM=pick.v==="month"&&pick.k===d.m;
-    g+=bar(x,MB,d.sum,d.fixed,cm,onM,`month|${d.m}`,`${+d.m.slice(5,7)}월 ${won(d.sum)}원`);
-    if(onM) selInfo={label:`${d.m.slice(0,4)!==today().slice(0,4)?d.m.slice(0,4)+"년 ":""}${+d.m.slice(5,7)}월`,sum:d.sum,fixed:d.fixed,peers:data.filter(o=>o!==d).map(o=>o.sum),live:d===last,unit:"달"};
-    x+=MB+6;
-    d.weeks.forEach(w=>{
-      const onW=pick.v==="week"&&pick.k===w.k&&pick.m===d.m;
-      g+=bar(x,WB,w.sum,w.fixed,cw,onW,`week|${w.k}|${d.m}`,`${+d.m.slice(5,7)}월 ${w.n}주 ${won(w.sum)}원`);
-      if(onW) selInfo={label:`${+d.m.slice(5,7)}월 ${w.n}주차 · ${md(w.s)}–${md(w.e)}`,sum:w.sum,fixed:w.fixed,peers:data.flatMap(o=>o.weeks).filter(o=>o!==w).map(o=>o.sum),live:w.e>=today(),unit:"주"};
-      x+=WB+WG;
-    });
-    g+=`<line x1="${gx}" x2="${x-WG}" y1="${base+5}" y2="${base+5}" stroke="var(--ink3)" stroke-width="1.5" stroke-linecap="round" opacity=".5"/><text x="${gx}" y="${H-4}" font-size="11.5" text-anchor="start" fill="var(--ink2)" font-weight="700">${+d.m.slice(5,7)}월</text>`;
-    x+=GAP-WG;
-  });
-  const W=Math.round(x-GAP+L+WG);
-  g=`<line x1="0" x2="${W}" y1="${base}" y2="${base}" stroke="var(--line)"/>`+g;
-  const s=selInfo||{label:"",sum:0,fixed:0,peers:[],unit:"달"};
-  const avg=s.peers.length?s.peers.reduce((a,b)=>a+b,0)/s.peers.length:0, diff=avg?Math.round((s.sum-avg)/avg*100):null;
+  const exp=txView==="expense", word=exp?"지출":"수입", t0=today();
+  const last=data[data.length-1], mi=Math.max(0,data.findIndex(d=>d.m===(chartPick&&chartPick.m))), selM=chartPick?data[mi]:last, si=data.indexOf(selM);
+  const selW=chartPick&&chartPick.v==="week"?selM.weeks.find(w=>w.k===chartPick.k):null;
+  // 지난달과 비교: 진행 중인 달은 지난달 같은 날짜까지와 비교한다.
+  const prevM=recentMonths(13).find((m,i,arr)=>arr[i+1]===selM.m);
+  const live=selM===last&&selM.m===ym(t0), day=+t0.slice(8,10);
+  const prevSum=prevM?S.tx.filter(t=>t.type===txView&&(!exp||!t.famRepay)&&ym(t.date)===prevM&&(!live||+t.date.slice(8,10)<=day)).reduce((s,t)=>s+t.amount,0):0;
+  const d=selM.sum-prevSum, mm=+selM.m.slice(5,7);
+  const cmp=prevSum?`${live?"지난달 이맘때":"지난달"}보다 <b style="color:${(exp?d>0:d<0)?"var(--down)":"var(--up)"}">${korWon(Math.abs(d))} ${d>=0?"더":"덜"}</b> ${exp?"썼어요":"벌었어요"}`:"";
+  const done=data.filter(x=>x.m!==ym(t0)), avgM=done.length?done.reduce((s,x)=>s+x.sum,0)/done.length:0;  // 평균은 끝난 달만
+  const months=data.map(x=>({key:`month|${x.m}|${x.m}`,v:x.sum,label:`${+x.m.slice(5,7)}월`,sub:x.m.slice(0,4)!==t0.slice(0,4)?x.m.slice(0,4):""}));
+  const weeks=selM.weeks.map(w=>({key:`week|${w.k}|${selM.m}`,v:w.sum,label:`${w.n}주`,sub:`${+w.s.slice(8,10)}~${+w.e.slice(8,10)}일`}));
+  const wi=selW?selM.weeks.indexOf(selW):-1;
+  const fixedTxt=exp&&selM.fixed?` · 고정비 ${korWon(selM.fixed)} 포함`:"";
   return `<div class="card sc-card">
-    <div class="rowline" style="align-items:flex-end"><div style="min-width:0"><div class="lbl" style="margin:0">${s.label} ${exp?"지출":"수입"}${s.live?" (진행 중)":""}</div><div class="sc-big">${won(s.sum)}<small>원</small></div></div>
-      ${diff!=null?`<span class="faint" style="text-align:right;flex:0 0 auto">다른 ${s.unit} 평균 ${korWon(avg)}<br><b style="color:${(exp?diff>0:diff<0)?"var(--down)":"var(--up)"}">${diff>0?"+":""}${diff}%</b></span>`:""}</div>
-    ${exp&&s.fixed?`<div class="faint" style="margin-top:2px">고정비 ${korWon(s.fixed)} 포함 · 생활비 ${korWon(s.sum-s.fixed)}</div>`:""}
-    <div class="mw-scroll"><svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="월별·주별 ${exp?"지출":"수입"}">${g}</svg></div>
-    <div class="sc-legend"><span><i style="background:${cm}"></i>월별</span><span><i style="background:${cw}"></i>주별 (그 달의 1주, 2주…)</span>${exp?`<span class="faint">연한 윗부분 = 고정비</span>`:""}</div>
+    <div class="lbl" style="margin:0">${mm}월 ${word}${live?" (진행 중)":""}</div>
+    <div class="sc-big">${won(selM.sum)}<small>원</small></div>
+    <div class="faint" style="margin-top:3px">${cmp}${cmp&&fixedTxt?"":""}${fixedTxt}</div>
+    <div class="fb-title"><span>월별</span>${avgM?`<span class="faint">점선 = 지난 달들 평균 ${korWon(avgM)}</span>`:""}</div>
+    ${flowBars(months,"var(--c-month)",si,avgM,56)}
+    <div class="fb-title"><span>${mm}월 주별</span>${selW?`<span class="faint">${selW.n}주 ${won(selW.sum)}원</span>`:`<span class="faint">막대를 누르면 그 주 기록이 열려요</span>`}</div>
+    ${flowBars(weeks,"var(--c-week)",wi,0,56)}
   </div>`;
 }
 // 받침 있으면 "이", 없으면 "가".
@@ -1474,7 +1477,7 @@ function pie(rows,total,size,big,empty){
     const lg=en-st>180?1:0,[x1,y1]=xy(st),[x2,y2]=xy(en);
     const col=CAT_COLOR[row.cat]||"#A8BAC2";
     paths+=`<path d="M${cx},${cy} L${x1.toFixed(2)},${y1.toFixed(2)} A${r},${r} 0 ${lg} 1 ${x2.toFixed(2)},${y2.toFixed(2)} Z" fill="${col}" stroke="var(--surface)" stroke-width="2" stroke-linejoin="round"/>`;
-    leg+=`<div class="legend" style="font-size:${big?12.5:11.5}px"><i style="background:${col}"></i><span class="nm">${esc(row.cat)}</span><span class="pc">${Math.round(f*100)}%</span></div>`;
+    leg+=`<div class="legend" style="font-size:${big?12.5:11.5}px"><i style="background:${col}"></i><span class="nm">${esc(row.cat)}</span><span class="pc">${Math.round(f*100)}% · ${korWon(row.sum)}</span></div>`;
   });
   return `<div class="piewrap">
     <div style="position:relative;width:${size}px;height:${size}px;flex:0 0 auto">
@@ -1587,8 +1590,9 @@ function addDate(dateStr,n){
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
 function md(dateStr){const [,m,d]=dateStr.split("-");return `${+m}월 ${+d}일`;}
-function heroMascot(){ return `<svg class="mascot" viewBox="0 0 120 120" aria-hidden="true"><ellipse cx="60" cy="110" rx="31" ry="5.5" fill="#0B3F8F" opacity=".2"/><g class="coin"><circle cx="60" cy="22" r="11" fill="#FFD15C" stroke="#F2B200" stroke-width="2"/><text x="60" y="26.5" text-anchor="middle" font-size="12.5" font-weight="800" fill="#B7791F" font-family="Pretendard,sans-serif">₩</text></g><path d="M98 74c7-1 8 6 3 7-4 1-4-5 1-6" fill="none" stroke="#FF8FAB" stroke-width="3" stroke-linecap="round"/><rect x="39" y="92" width="12" height="15" rx="5" fill="#F58CA7"/><rect x="69" y="92" width="12" height="15" rx="5" fill="#F58CA7"/><path d="M37 52L40 34L54 45Z" fill="#FF8FAB" stroke="#FF8FAB" stroke-width="5" stroke-linejoin="round"/><path d="M83 52L80 34L66 45Z" fill="#FF8FAB" stroke="#FF8FAB" stroke-width="5" stroke-linejoin="round"/><ellipse cx="60" cy="72" rx="38" ry="30" fill="#FFB8CB"/><ellipse cx="50" cy="56" rx="14" ry="7" fill="#fff" opacity=".35"/><rect x="51" y="43.5" width="18" height="4.5" rx="2.25" fill="#D9607E"/><circle cx="46" cy="67" r="4.2" fill="#2B2F3A"/><circle cx="74" cy="67" r="4.2" fill="#2B2F3A"/><circle cx="47.4" cy="65.6" r="1.4" fill="#fff"/><circle cx="75.4" cy="65.6" r="1.4" fill="#fff"/><ellipse cx="37" cy="78" rx="5.5" ry="3.3" fill="#FF6F92" opacity=".4"/><ellipse cx="83" cy="78" rx="5.5" ry="3.3" fill="#FF6F92" opacity=".4"/><ellipse cx="60" cy="80" rx="13" ry="9" fill="#FF93AE"/><ellipse cx="55.5" cy="80" rx="2.4" ry="3.3" fill="#C94F6D"/><ellipse cx="64.5" cy="80" rx="2.4" ry="3.3" fill="#C94F6D"/><path d="M95 30l1.6 3.8 3.8 1.6-3.8 1.6-1.6 3.8-1.6-3.8-3.8-1.6 3.8-1.6z" fill="#fff" opacity=".85"/></svg>`; }
-function recordMascot(){ return `<svg class="mini-mascot" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29" fill="#EAF3FF"/><path d="M17 28L19 16L28 24Z" fill="#FF8FAB" stroke="#FF8FAB" stroke-width="3.5" stroke-linejoin="round"/><path d="M47 28L45 16L36 24Z" fill="#FF8FAB" stroke="#FF8FAB" stroke-width="3.5" stroke-linejoin="round"/><ellipse cx="32" cy="37" rx="19" ry="16" fill="#FFB8CB"/><circle cx="25" cy="34" r="2.6" fill="#2B2F3A"/><circle cx="39" cy="34" r="2.6" fill="#2B2F3A"/><circle cx="25.9" cy="33.2" r=".9" fill="#fff"/><circle cx="39.9" cy="33.2" r=".9" fill="#fff"/><ellipse cx="32" cy="42" rx="7.5" ry="5.2" fill="#FF93AE"/><ellipse cx="29.4" cy="42" rx="1.5" ry="2" fill="#C94F6D"/><ellipse cx="34.6" cy="42" rx="1.5" ry="2" fill="#C94F6D"/><ellipse cx="19.5" cy="41" rx="3.2" ry="2" fill="#FF6F92" opacity=".4"/><ellipse cx="44.5" cy="41" rx="3.2" ry="2" fill="#FF6F92" opacity=".4"/><circle cx="49" cy="15" r="7.5" fill="#FFD15C" stroke="#F2B200" stroke-width="1.5"/><text x="49" y="18.2" text-anchor="middle" font-size="9" font-weight="800" fill="#B7791F" font-family="Pretendard,sans-serif">₩</text></svg>`; }
+// 마스코트: 새싹 코인 (앱 아이콘과 같은 그림).
+function heroMascot(){ return `<svg class="mascot" viewBox="0 0 120 120" aria-hidden="true"><ellipse cx="60" cy="111" rx="26" ry="4.5" fill="#0B3F8F" opacity=".22"/><path d="M60 44V24" stroke="#1FAE73" stroke-width="5" stroke-linecap="round"/><path d="M60 32C49 32 42 24 42 15C53 15 60 22 60 32Z" fill="#34C98F"/><path d="M60 28C71 28 78 20 78 11C67 11 60 18 60 28Z" fill="#1FAE73"/><circle cx="60" cy="74" r="31" fill="#FFD15C"/><circle cx="60" cy="74" r="23" fill="none" stroke="#E8A800" stroke-width="3"/><text x="60" y="85" text-anchor="middle" font-size="30" font-weight="800" font-family="Pretendard,Malgun Gothic,Apple SD Gothic Neo,sans-serif" fill="#9A6700">₩</text></svg>`; }
+function recordMascot(){ return `<svg class="mini-mascot" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="29" fill="#EAF3FF"/><g transform="translate(32 33) scale(.43) translate(-60 -60)"><path d="M60 44V24" stroke="#1FAE73" stroke-width="5" stroke-linecap="round"/><path d="M60 32C49 32 42 24 42 15C53 15 60 22 60 32Z" fill="#34C98F"/><path d="M60 28C71 28 78 20 78 11C67 11 60 18 60 28Z" fill="#1FAE73"/><circle cx="60" cy="74" r="31" fill="#FFD15C"/><circle cx="60" cy="74" r="23" fill="none" stroke="#E8A800" stroke-width="3"/><text x="60" y="85" text-anchor="middle" font-size="30" font-weight="800" font-family="Pretendard,Malgun Gothic,Apple SD Gothic Neo,sans-serif" fill="#9A6700">₩</text></g></svg>`; }
 
 /* ══════════════ 렌더 ══════════════ */
 function render(){
