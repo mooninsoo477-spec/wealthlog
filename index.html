@@ -311,6 +311,16 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 .pg-top b{font-size:14.5px;font-weight:800;margin-left:6px}
 .pg-bar{height:5px;border-radius:3px;background:var(--line2);margin-top:8px;overflow:hidden}
 .pg-bar i{display:block;height:100%;border-radius:3px;opacity:.75}
+.analysis-entry{display:block;width:100%;border:0;text-align:left;font:inherit;color:inherit;cursor:pointer}
+.an-score,.an-big{font-size:20px;font-weight:850;color:var(--accent);letter-spacing:-.03em}
+.an-score small,.an-big small{font-size:12px;margin-left:1px}
+.an-big{font-size:34px}
+.an-top{margin:10px 0 0;padding-left:20px;line-height:1.6;font-size:14px}
+.an-top li{margin-bottom:6px}
+.an-list{margin:10px 0 4px;padding-left:18px;font-size:13.5px;line-height:1.6;color:var(--ink2)}
+.an-list li{margin-bottom:5px}
+.an-list.act{color:var(--ink);font-weight:600}
+.an-sec .pg-top{gap:8px}
 @media(max-width:380px){.hero-copy{max-width:78%}.mascot{width:88px;height:88px;right:8px}.tabs button{font-size:11.5px}.entry .cat{display:none}}
 </style>
 </head>
@@ -418,6 +428,7 @@ const DEFAULT={
   netWorthHistory:[],
   reports:{weekly:[],monthly:[],realEstate:[],stocks:[]},
   chat:[],
+  analysis:null,
   settings:{recordsFrom:"2026-08-01",provider:"gemini",apiKey:"",modelChain:"",modelIndex:0,modelDate:"",
     factchatKey:"",factchatBase:"https://factchat-cloud.mindlogic.ai/v1/gateway",factchatModel:"",
     supabaseUrl:"",supabaseKey:"",syncCode:"",theme:"auto"}
@@ -704,10 +715,10 @@ function activeModelIndex(){
   if(S.settings.modelDate!==today()){ S.settings.modelDate=today(); S.settings.modelIndex=0; }
   return S.settings.modelIndex||0;
 }
-async function callGemini(model,prompt,web){
+async function callGemini(model,prompt,web,maxTok){
   const k=(S.settings.apiKey||"").trim();
   const body={ contents:[{role:"user",parts:[{text:prompt}]}],
-               generationConfig:{ temperature:0.7, maxOutputTokens:2048 } };
+               generationConfig:{ temperature:0.7, maxOutputTokens:maxTok||2048 } };
   if(web) body.tools=[{google_search:{}}];
   const url="https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(model)+":generateContent?key="+encodeURIComponent(k);
   const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
@@ -724,7 +735,7 @@ async function callGemini(model,prompt,web){
   if(!text) throw new Error("empty response");
   return text;
 }
-async function ai(prompt,web){
+async function ai(prompt,web,maxTok){
   const k=(S.settings.apiKey||"").trim();
   if(!k){ const e=new Error("nokey"); e.nokey=true; throw e; }
   const chain=modelChain();
@@ -732,7 +743,7 @@ async function ai(prompt,web){
   let lastErr=null;
   for(; idx<chain.length; idx++){
     try{
-      const text=await callGemini(chain[idx],prompt,web);
+      const text=await callGemini(chain[idx],prompt,web,maxTok);
       if(idx!==(S.settings.modelIndex||0)){ S.settings.modelIndex=idx; S.settings.modelDate=today(); await saveLocal(S,false); }
       return text;
     }catch(e){
@@ -1214,6 +1225,112 @@ function periodList(){
   });
   return h;
 }
+// ── 재무 분석: 앱 데이터를 숫자로 요약해 AI에 넘기고, 영역별 진단과 할 일을 받아 보여준다.
+function analysisData(){
+  const c=calc(), pace=monthlyPace(), tp=taxPlan(), y=today().slice(0,4), from=recordsFrom();
+  const monthRow=m=>{
+    const f=moneyFlow(m), cats={};
+    S.tx.filter(t=>t.type==="expense"&&!t.famRepay&&ym(t.date)===m).forEach(t=>cats[t.cat]=(cats[t.cat]||0)+t.amount);
+    return {월:m,진행중:m===ym(today())?today().slice(8,10)+"일까지만 기록됨":undefined,수입:f.inc,고정비:f.fixed,생활비_변동:f.variable,부모님상환_통장에서:f.famCash,부모님상환_월세에서바로:f.famDirect,부모님카드사용:f.parent,은행납부:f.bank,남은돈:f.left,범주별지출:cats};
+  };
+  const months=recentMonths(4).filter(m=>!from||m>=from.slice(0,7)).map(monthRow).filter(r=>r.수입||r.고정비||r.생활비_변동);
+  const byAcct=ACCOUNTS.map(a=>{
+    const st=S.stocks.filter(s=>(s.account||"일반")===a);
+    const val=st.reduce((t,s)=>t+(s.currentPrice!=null?s.currentPrice:s.buyPrice)*s.qty,0);
+    return {계좌:a,평가금액:Math.round(val),종목:st.map(s=>({이름:s.name,평가:Math.round((s.currentPrice!=null?s.currentPrice:s.buyPrice)*s.qty),수익률:s.buyPrice?Math.round(((s.currentPrice||s.buyPrice)/s.buyPrice-1)*1000)/10+"%":null}))};
+  }).filter(x=>x.평가금액);
+  const bi=budgetInfo();
+  return {
+    기준일:today(),
+    사용자메모:S.profile||{},
+    월별현금흐름_최근:months,
+    생활비예산:bi.total?{한달예산:bi.total,이번기간사용:bi.spent,사용률:Math.round(bi.pct)+"%",기간경과:Math.round(bi.timePct)+"%"}:"설정 안 함",
+    매달반복:(S.recurring||[]).map(r=>({항목:r.item,금액:r.amount,종류:r.type==="income"?"수입":"지출",날짜:r.day})),
+    순자산:{순자산:Math.round(c.net),총자산:Math.round(c.totalAssets),총부채:Math.round(c.totalDebt),월평균증가:pace?Math.round(pace.v):null,증가기준:pace?pace.basis:null,
+      추이:(S.netWorthHistory||[]).slice(-6).map(x=>({월:x.ym,순자산:x.net}))},
+    부동산:{이름:S.realEstate.name,현재시세:S.realEstate.currentPrice,매입가:S.realEstate.purchasePrice,매입시기:S.realEstate.purchaseDate,집값대비은행대출:c.re?Math.round(c.bankDebt/c.re*100)+"%":null},
+    부채:{은행대출:{잔액:Math.round(c.bankDebt),상품:"보금자리론 체증식 40년 고정 3.8%",월납부:c.ls.nextAmount},부모님차입금:{잔액:Math.round(c.familyDebt),상환목표시점:S.familyLoan.targetYm||"미정",이자:"없음"}},
+    현금성_기타자산:S.others.filter(o=>o.amount).map(o=>({이름:o.name,금액:o.amount})),
+    투자:{계좌별:byAcct,원금대비수익:investRows().map(r=>({계좌:r.a,원금:r.principal,현재가치:r.value,손익:r.pl})),올해배당:(S.dividends||[]).filter(x=>x.date.slice(0,4)===y).reduce((s,x)=>s+x.amount,0)},
+    절세계좌_올해:{ISA:{납입:contribYearSum("ISA"),연한도:tp.isaLimit},연금저축:{납입:contribYearSum("연금저축"),세액공제한도:tp.pensionLimit,공제율:tp.creditRate+"%"},남은개월:12-(+today().slice(5,7))+1},
+    목표:goalList().map(g=>({이름:g.name,목표집값:g.price,예상대출:g.loan||0,모아야할자기자본:goalNeeded(g),목표기간_년:g.years})),
+    인생이벤트:(S.events||[]).map(e=>({이름:e.name,연도:e.year,금액:e.amount}))
+  };
+}
+function analysisPrompt(){
+  return `너는 한국의 개인 재무 분석가다. 아래는 한 사람의 실제 가계부·자산 데이터(JSON, 금액 단위 원)다.
+이 데이터만 근거로 전반적인 재무 상태를 분석해라. 데이터에 없는 사실은 지어내지 말고, 부족한 데이터는 "기록이 더 필요" 라고 써라.
+
+분석할 영역 (이 순서, 각 영역 1개씩):
+1. 현금흐름·저축률 — 수입 대비 남는 돈, 부모님 상환·대출 납부를 포함한 실질 저축률, 추세
+2. 소비 습관 — 범주별 지출의 크기와 변화, 고정비 비중, 생활비 예산 준수, 반복되는 패턴
+3. 비상자금 — 현금성 자산이 월 지출(고정비+생활비)의 몇 개월분인지 (3~6개월 기준)
+4. 부채 — 은행 대출(금리·집값 대비 비율), 부모님 차입금 상환 속도와 우선순위
+5. 절세 — 연금저축 세액공제 한도·ISA 한도 활용도, 남은 기간에 얼마를 넣으면 얼마가 돌아오는지, IRP 추가 여부 등 한국 세제 기준
+6. 투자 — 계좌별 배분(일반/ISA/연금저축), 종목 집중도, 원금 대비 수익, 절세계좌를 먼저 채우는지
+7. 부동산·목표 — 갈아타기 목표까지 필요한 자기자본, 지금 속도로 걸리는 기간, 인생 이벤트와 겹치는 시점의 자금 문제
+
+규칙:
+- "진행중" 표시가 있는 이번 달은 아직 끝나지 않았으니 평균·추세 판단에서 빼고 참고만 해라.
+- 모든 판단에 데이터의 숫자를 근거로 넣어라 (예: "생활비가 3개월 평균 92만원으로 예산 100만원 안").
+- 실행할 일은 구체적으로: 금액·시점·계좌를 넣어라 (예: "12월까지 연금저축에 월 50만원씩 150만원 추가 → 환급 약 20만원").
+- 특정 종목을 사거나 팔라고 권하지 말고, 배분·비중·계좌 활용 수준으로만 말해라.
+- 사용자메모(coachNote 등)에 적힌 가치관은 존중해라.
+- 한국어, 짧고 명확하게. 영역마다 points 2~3개, actions 1~2개.
+
+출력은 JSON 하나만 (설명·마크다운 금지):
+{"score":0~100 정수(재무 건강 종합점수),"headline":"한 줄 총평","top3":["지금 가장 중요한 실행 3가지"],"sections":[{"area":"영역 이름","status":"good|warn|bad","summary":"한 줄 요약","points":["진단"],"actions":["할 일"]}]}
+
+데이터:
+${JSON.stringify(analysisData())}`;
+}
+async function runAnalysis(){
+  if(busy.analysis) return;
+  busy.analysis=true; notice=""; render();
+  try{
+    const raw=stripJson(await ai(analysisPrompt(),false,8192));
+    const j=JSON.parse(raw.slice(raw.indexOf("{"),raw.lastIndexOf("}")+1));
+    if(!Array.isArray(j.sections)) throw new Error("형식 오류");
+    S.analysis={date:new Date().toISOString(),result:j};
+    busy.analysis=false; await commit();
+  }catch(e){
+    busy.analysis=false; notice=aiErr(e,"재무 분석"); render();
+  }
+}
+const analysisStale=()=>!S.analysis||Date.now()-new Date(S.analysis.date).getTime()>7*864e5;
+function analysisEntry(){
+  const r=S.analysis&&S.analysis.result;
+  return `<button class="card analysis-entry" data-openanalysis>
+    <div class="rowline"><strong>재무 분석</strong>${r?`<span class="an-score">${r.score}<small>점</small></span>`:`<span class="faint">열어보기 →</span>`}</div>
+    <div class="faint" style="margin-top:4px;text-align:left">${r?esc(r.headline):"연금저축·ISA·절세·투자·부동산·지출 습관을 내 데이터로 분석해요"}</div>
+  </button>`;
+}
+function analysisPage(){
+  let h=`<div class="subpage-head"><button data-tab="홈" aria-label="뒤로">‹</button><strong>재무 분석</strong></div>`;
+  const a=S.analysis, r=a&&a.result;
+  if(!aiConfigured()) return h+`<div class="card"><strong>AI 키가 필요해요</strong><div class="faint" style="margin-top:6px">설정 탭에서 Google AI Studio API 키를 넣으면 내 데이터로 분석해 드려요.</div><button class="link-btn" data-tab="설정">설정으로 →</button></div>`;
+  if(busy.analysis) h+=`<div class="note info">내 데이터를 분석하고 있어요… (20초 정도 걸려요)</div>`;
+  if(!r) return h+(busy.analysis?"":`<div class="card"><div class="faint">아직 분석한 적이 없어요.</div><button class="btn" data-runanalysis style="margin-top:10px">지금 분석하기</button></div>`);
+  const badge=s=>({good:["ok","좋음"],warn:["warn","점검"],bad:["bad","위험"]}[s]||["warn","점검"]);
+  const d=new Date(a.date);
+  h+=`<div class="card an-head">
+    <div class="rowline" style="align-items:flex-start"><div><div class="lbl">재무 건강 점수</div><div class="an-big">${r.score}<small>점</small></div></div>
+      <button class="edit-pill" data-runanalysis ${busy.analysis?"disabled":""}>${busy.analysis?"분석 중…":"다시 분석"}</button></div>
+    <div style="font-weight:700;margin-top:6px">${esc(r.headline||"")}</div>
+    <div class="faint" style="margin-top:4px">${d.getMonth()+1}월 ${d.getDate()}일 분석 · 7일이 지나면 열 때 자동으로 새로 분석해요</div>
+  </div>`;
+  if((r.top3||[]).length) h+=`<div class="card"><strong>지금 할 일</strong><ol class="an-top">${r.top3.map(x=>`<li>${esc(x)}</li>`).join("")}</ol></div>`;
+  (r.sections||[]).forEach((s,i)=>{
+    const [k,l]=badge(s.status);
+    h+=`<details class="weekgroup an-sec"${i<2?" open":""}><summary><div class="pg"><div class="pg-top"><span class="health-badge ${k}">${l}</span><span class="pg-lbl">${esc(s.area||"")}</span></div><div class="faint" style="margin-top:4px;font-weight:500">${esc(s.summary||"")}</div></div></summary>
+      <div class="weekbody">
+        ${(s.points||[]).length?`<ul class="an-list">${s.points.map(p=>`<li>${esc(p)}</li>`).join("")}</ul>`:""}
+        ${(s.actions||[]).length?`<div class="lbl" style="margin-top:8px">할 일</div><ul class="an-list act">${s.actions.map(p=>`<li>${esc(p)}</li>`).join("")}</ul>`:""}
+      </div></details>`;
+  });
+  h+=`<div class="faint" style="margin:12px 4px">AI가 앱에 기록된 숫자만 보고 만든 참고용 분석이에요. 세법·한도는 바뀔 수 있으니 큰 결정 전에는 금융기관이나 세무 상담으로 확인하세요.</div>`;
+  return h;
+}
 // 한 달 생활비(총액)만 쓴다. 예전에 넣어둔 카테고리별 예산은 무시한다.
 // 생활비 예산은 변동비만 비교한다 (고정비와 부모님 상환은 제외).
 function budgetInfo(){
@@ -1391,6 +1508,7 @@ function render(){
 `;
     const goals=goalList(), pace=monthlyPace();
     h+=checkCard(c,pace);
+    h+=analysisEntry();
     // 목표는 홈에서 바로 수정한다.
     h+=`<div class="card"><div class="rowline" style="margin-bottom:6px"><strong>나의 목표</strong><button class="edit-pill" data-goaledit>${goalEdit?"완료":"수정"}</button></div>`;
     if(goalEdit){
@@ -1684,6 +1802,8 @@ function render(){
     `;
   }
 
+  if(tab==="분석") h+=analysisPage();
+
   /* ───── 설정 ───── */
   if(tab==="설정"){
     h+=`<div class="subpage-head"><strong>설정</strong></div>
@@ -1768,6 +1888,8 @@ function bind(){
   if($("#rename")) $("#rename").onchange=async e=>{S.realEstate.name=e.target.value;await commit()};
   if($("#refreshprice")) $("#refreshprice").onclick=refreshPrice;
   if($("#toggleAssetEdit")) $("#toggleAssetEdit").onclick=()=>{assetEdit=!assetEdit;render()};
+  $$("[data-openanalysis]").forEach(b=>b.onclick=()=>{tab="분석";notice="";render();scrollTo(0,0);if(analysisStale()&&aiConfigured())runAnalysis();});
+  $$("[data-runanalysis]").forEach(b=>b.onclick=()=>runAnalysis());
   $$("[data-pview]").forEach(b=>b.onclick=()=>{pView=b.dataset.pview;render()});
   if($("#recordsFrom")) $("#recordsFrom").onchange=async e=>{S.settings.recordsFrom=e.target.value||"";await commit()};
   if($("#budgetTotal")) $("#budgetTotal").onchange=async e=>{S.budgets=S.budgets||{monthlyTotal:0,categories:{}};S.budgets.monthlyTotal=+e.target.value.replace(/[^\d]/g,"")||0;await commit()};
