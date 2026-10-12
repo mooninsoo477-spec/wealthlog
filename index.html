@@ -291,7 +291,9 @@ input:focus,textarea:focus,select:focus{background:var(--card);border-color:#9CC
 .kpi b{display:block;font-size:15px;font-weight:800;letter-spacing:-.03em;white-space:nowrap}
 .mc-budget{margin-top:12px;padding-top:12px;border-top:1px solid var(--line2)}
 .mc-left{font-size:20px;font-weight:850;letter-spacing:-.03em}
-.mc-alerts{margin-top:10px}
+.mc-alerts{margin-top:6px;border-top:1px solid var(--line2)}
+.mc-sum{display:flex;gap:18px;margin-top:12px;font-size:13.5px;color:var(--ink2)}
+.mc-sum b{margin-left:3px}
 .mc-alerts .check-row{padding:7px 0}
 .mc-more{margin-top:8px}
 .mc-more>summary{cursor:pointer;font-size:12.5px;color:var(--ink3);padding:6px 0;list-style:none}
@@ -827,18 +829,16 @@ function checkCard(c,pace){
   }
   if(pace) more.push(["info",`순자산 한 달 약 ${korWon(Math.abs(pace.v))}씩 ${pace.v>=0?"증가":"감소"} <span class="faint">(${pace.basis})</span>`]);
   if(bi.fixed) more.push(["info",`고정비 ${korWon(bi.fixed)}는 생활비에서 빼고 계산해요`]);
-  const kpi=(l,v,col)=>`<div class="kpi"><div class="lbl">${l}</div><b${col?` style="color:${col}"`:""}>${v}</b></div>`;
-  const rowsHtml=list=>list.map(([k,t])=>`<div class="check-row"><i class="check-dot ${k}"></i><span>${t}</span></div>`).join("");
+  // 홈에는 남은 생활비, 수입·지출 한 줄, 가장 중요한 알림 하나만 보여준다.
+  const rowsHtml=list=>list.map(([k,s])=>`<div class="check-row"><i class="check-dot ${k}"></i><span>${s}</span></div>`).join("");
+  const al=alerts[0];
   return `<div class="card month-card">
-    <div class="rowline"><strong>${+m.slice(5,7)}월</strong><span class="faint">${md(now)} 기준</span></div>
-    <div class="kpi-row">${kpi("수입",korWon(f.inc),"var(--up)")}${kpi("쓴 돈",korWon(spent),"var(--down)")}${kpi(f.famCash?"남은 돈 · 상환 후":"남은 돈",(f.left>=0?"+":"−")+korWon(Math.abs(f.left)),f.left>=0?"var(--ink)":"var(--down)")}</div>
-    ${bi.total?`<div class="mc-budget">
-      <div class="rowline"><span class="lbl" style="margin:0">남은 생활비${bi.range.payday>1?` · ${md(bi.range.start)}–${md(bi.range.end)}`:""}</span><span class="faint">${bi.daysLeft}일 남음</span></div>
-      <div class="rowline" style="align-items:baseline;margin:2px 0 7px"><b class="mc-left" style="color:${bi.remaining<0?"var(--down)":"var(--ink)"}">${bi.remaining<0?"초과 ":""}${won(Math.abs(bi.remaining))}원</b><span class="faint">/ ${korWon(bi.total)}</span></div>
-      <div class="bar"><i style="width:${Math.min(100,bi.pct)}%;background:${bi.pct>100?"var(--down)":bi.pct>bi.timePct+10?"var(--amber)":"var(--accent)"}"></i></div>
-    </div>`:`<button class="link-btn" data-openbudget>한 달 생활비 정하기 →</button>`}
-    ${alerts.length?`<div class="mc-alerts">${rowsHtml(alerts.slice(0,2))}</div>`:""}
-    ${more.length||alerts.length>2?`<details class="mc-more"><summary>자세히</summary>${rowsHtml([...alerts.slice(2),...more])}</details>`:""}
+    ${bi.total?`<div class="rowline"><span class="lbl" style="margin:0">${+m.slice(5,7)}월 남은 생활비</span><span class="faint">${md(bi.range.end)}까지 ${bi.daysLeft}일</span></div>
+      <div class="rowline" style="align-items:baseline;margin:3px 0 8px"><b class="mc-left" style="color:${bi.remaining<0?"var(--down)":"var(--ink)"}">${bi.remaining<0?"초과 ":""}${won(Math.abs(bi.remaining))}원</b><span class="faint">/ ${korWon(bi.total)}</span></div>
+      <div class="bar"><i style="width:${Math.min(100,bi.pct)}%;background:${bi.pct>100?"var(--down)":bi.pct>bi.timePct+10?"var(--amber)":"var(--accent)"}"></i></div>`
+    :`<div class="rowline"><strong>${+m.slice(5,7)}월</strong><button class="link-btn" style="padding:0" data-openbudget>생활비 정하기 →</button></div>`}
+    <div class="mc-sum"><span>수입 <b style="color:var(--up)">${korWon(f.inc)}</b></span><span>지출 <b style="color:var(--down)">${korWon(spent)}</b></span></div>
+    ${al?`<div class="mc-alerts">${rowsHtml([al])}</div>`:""}
     ${day<=10&&monthAgg(pm).expense?`<button class="link-btn" data-gosummary>${+pm.slice(5,7)}월 결산 보기 →</button>`:""}
   </div>`;
 }
