@@ -465,7 +465,9 @@ async function loadLocal(){
   }catch(e){}
   return null;
 }
+const AIKEY_KEY="wealth:aikey";
 async function saveLocal(d,track=true){
+  try{ if(d.settings&&d.settings.apiKey) localStorage.setItem(AIKEY_KEY,d.settings.apiKey); }catch(_){}
   try{
     if(track){ d.meta={...(d.meta||{}),lastLocalSave:new Date().toISOString()}; }
     if(hasClaudeStore) await window.storage.set(KEY,JSON.stringify(d));
@@ -483,7 +485,9 @@ function merge(base,inc){
   return o;
 }
 // 이 기기에만 두는 설정 (계정에 동기화하지 않음).
-const LOCAL_ONLY=["apiKey","factchatKey","supabaseUrl","supabaseKey","syncCode","theme"];
+// Gemini 키는 계정(본인만 읽을 수 있는 wealth_user_state 행)에 함께 저장해서, 폰이 저장공간을 비우거나 다른 기기에서 열어도 사라지지 않게 한다.
+// 이 기기 백업(AIKEY_KEY)도 따로 둔다.
+const LOCAL_ONLY=["factchatKey","supabaseUrl","supabaseKey","syncCode","theme"];
 const ts=v=>v?new Date(v).getTime()||0:0;
 // 마지막 동기화 이후 이 기기에서 저장만 되고 아직 올라가지 못한 변경이 있는지.
 function isDirty(){ const m=S.meta||{}; return ts(m.lastLocalSave)>ts(m.lastSync); }
@@ -622,9 +626,11 @@ async function sbSave(){
 }
 // 서버 데이터를 받아들이되, 이 기기에만 두는 키·연결 정보는 그대로 유지한다.
 function adoptServer(row){
-  const keep={}; LOCAL_ONLY.forEach(k=>keep[k]=S.settings[k]);
+  const keep={}; LOCAL_ONLY.forEach(k=>{ if(S.settings[k]) keep[k]=S.settings[k]; });
+  const myKey=S.settings.apiKey;
   S=merge(DEFAULT,row.data);
   S.settings={...S.settings,...keep};
+  if(!S.settings.apiKey&&myKey) S.settings.apiKey=myKey;
   S.meta={...(S.meta||{}),lastSync:row.updated_at||new Date().toISOString()};
 }
 async function sbPull(opts={}){
@@ -728,8 +734,18 @@ function accountCard(){
 }
 
 /* ══════════════ AI 호출 ══════════════ */
-const DEFAULT_CHAIN="gemini-flash-latest,gemini-2.5-flash,gemini-2.5-flash-lite";
-function modelChain(){ return (S.settings.modelChain||DEFAULT_CHAIN).split(",").map(s=>s.trim()).filter(Boolean); }
+// 2026년 10월 무료 등급 기준: Flash-Lite가 하루 한도가 가장 넉넉하고(약 500회), Flash는 하루 20회 안팎.
+// 평소 기록 정리·시세 확인은 Flash-Lite부터, 재무 분석처럼 가끔 하는 무거운 작업은 Flash부터 쓴다.
+const DEFAULT_CHAIN="gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-latest";
+const ANALYSIS_CHAIN="gemini-flash-latest,gemini-3.5-flash-lite,gemini-3.1-flash-lite";
+const OLD_CHAINS=["gemini-flash-latest,gemini-2.5-flash,gemini-2.5-flash-lite"];
+// 직접 적은 모델 뒤에 기본 모델을 덧붙여, 적은 모델이 없어져도 기본 모델로 넘어가게 한다.
+function modelChain(){
+  const own=OLD_CHAINS.includes(S.settings.modelChain)?"":(S.settings.modelChain||"");
+  const list=(own||DEFAULT_CHAIN).split(",").map(s=>s.trim()).filter(Boolean);
+  DEFAULT_CHAIN.split(",").forEach(m=>{ if(!list.includes(m)) list.push(m); });
+  return list;
+}
 function activeModelIndex(){
   if(S.settings.modelDate!==today()){ S.settings.modelDate=today(); S.settings.modelIndex=0; }
   return S.settings.modelIndex||0;
@@ -754,20 +770,22 @@ async function callGemini(model,prompt,web,maxTok){
   if(!text) throw new Error("empty response");
   return text;
 }
-async function ai(prompt,web,maxTok){
+async function ai(prompt,web,maxTok,chainStr){
   const k=(S.settings.apiKey||"").trim();
   if(!k){ const e=new Error("nokey"); e.nokey=true; throw e; }
-  const chain=modelChain();
-  let idx=activeModelIndex();
+  const chain=chainStr?chainStr.split(","):modelChain();
+  let idx=chainStr?0:activeModelIndex();
   let lastErr=null;
   for(; idx<chain.length; idx++){
     try{
       const text=await callGemini(chain[idx],prompt,web,maxTok);
-      if(idx!==(S.settings.modelIndex||0)){ S.settings.modelIndex=idx; S.settings.modelDate=today(); await saveLocal(S,false); }
+      if(!chainStr&&idx!==(S.settings.modelIndex||0)){ S.settings.modelIndex=idx; S.settings.modelDate=today(); await saveLocal(S,false); }
       return text;
     }catch(e){
       lastErr=e;
-      if(e&&e.status===429&&idx<chain.length-1){ continue; } // 이 모델 한도 초과 → 다음 모델로
+      // 한도 초과(429)나 없어진·권한 없는 모델(404, 403, 400 not found)이면 다음 모델로
+      const gone=e&&(e.status===404||e.status===403||(e.status===400&&/not found|not supported|unsupported/i.test(e.detail||"")));
+      if(e&&(e.status===429||gone)&&idx<chain.length-1){ continue; }
       throw e;
     }
   }
@@ -1316,7 +1334,7 @@ async function runAnalysis(){
   if(busy.analysis) return;
   busy.analysis=true; notice=""; render();
   try{
-    const raw=stripJson(await ai(analysisPrompt(),false,8192));
+    const raw=stripJson(await ai(analysisPrompt(),false,8192,ANALYSIS_CHAIN));
     const j=JSON.parse(raw.slice(raw.indexOf("{"),raw.lastIndexOf("}")+1));
     if(!Array.isArray(j.sections)) throw new Error("형식 오류");
     S.analysis={date:new Date().toISOString(),result:j};  // stale 표시는 새 결과로 사라진다
@@ -1955,10 +1973,10 @@ function render(){
       <div class="field"><div class="lbl">API 키</div>
         <input type="password" data-set="apiKey" value="${esc(S.settings.apiKey)}" placeholder="AIza..."></div>
       <div class="field"><div class="lbl">모델 순서 (쉼표로 구분, 앞에서부터 시도)</div>
-        <input type="text" data-set="modelChain" value="${esc(S.settings.modelChain||DEFAULT_CHAIN)}" placeholder="${DEFAULT_CHAIN}"></div>
-      <div class="faint">첫 번째 모델의 무료 한도를 다 쓰면 자동으로 다음 모델로 넘어갑니다 (같은 날 안에서 기억해뒀다가 계속 다음 모델을 씁니다). 모델 이름이 바뀌면 이 칸만 고치면 됩니다.</div>
-      <div class="faint" style="margin-top:8px">aistudio.google.com에서 무료로 발급받을 수 있습니다. 운동앱에서 쓰시는 키를 그대로 넣으셔도 됩니다. 키는 이 기기에만 저장되고, 기기 간 동기화로도 올라가지 않습니다. 다른 기기에서는 한 번 따로 입력해 주세요.</div>
-      ${S.settings.modelIndex?`<div class="faint" style="margin-top:8px;color:var(--amber)">오늘은 ${(S.settings.modelChain||DEFAULT_CHAIN).split(",")[S.settings.modelIndex]||""} 모델을 쓰고 있어요 (앞 모델 한도 초과).</div>`:""}
+        <input type="text" data-set="modelChain" value="${esc(OLD_CHAINS.includes(S.settings.modelChain)?"":(S.settings.modelChain||""))}" placeholder="비우면 기본: ${DEFAULT_CHAIN}"></div>
+      <div class="faint">비워 두면 무료 한도가 가장 넉넉한 Flash-Lite부터 씁니다. 한도를 다 쓰거나 모델이 없어지면 자동으로 다음 모델로 넘어가요. 재무 분석은 더 똑똑한 Flash를 먼저 씁니다.</div>
+      <div class="faint" style="margin-top:8px">aistudio.google.com에서 무료로 발급받을 수 있습니다. 키는 로그인한 계정에 함께 저장돼서(본인만 읽을 수 있음) 폰을 바꾸거나 저장공간이 비워져도 다시 넣지 않아도 돼요. 내보내기 파일에는 들어가지 않아요.</div>
+      ${S.settings.modelIndex?`<div class="faint" style="margin-top:8px;color:var(--amber)">오늘은 ${modelChain()[S.settings.modelIndex]||""} 모델을 쓰고 있어요 (앞 모델 한도 초과).</div>`:""}
       <div class="btnrow" style="margin-top:10px"><button class="btn ghost tiny" id="testai" ${busy.aiTest?"disabled":""}>${spin(busy.aiTest,busy.aiTest?"확인 중…":"연결 테스트")}</button></div>
       ${window.__aiTestResult?`<div class="faint" style="margin-top:8px;white-space:pre-wrap">${esc(window.__aiTestResult)}</div>`:""}
     </div>
@@ -2245,13 +2263,13 @@ function bind(){
     window.__conflict=false; sbPull({force:true});
   };
   if($("#exp")) $("#exp").onclick=()=>{
-    const b=new Blob([JSON.stringify(S,null,2)],{type:"application/json"});
+    const b=new Blob([JSON.stringify({...S,settings:{...S.settings,apiKey:""}},null,2)],{type:"application/json"});
     const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="wealth-data.json";a.click();
   };
   if($("#imp")) $("#imp").onclick=()=>{
     const inp=document.createElement("input");inp.type="file";inp.accept="application/json";
     inp.onchange=async()=>{const f=inp.files[0];if(!f)return;
-      try{ S=merge(DEFAULT,JSON.parse(await f.text())); await commit(); notice="가져왔습니다."; render(); }
+      try{ const myKey=S.settings.apiKey; S=merge(DEFAULT,JSON.parse(await f.text())); if(!S.settings.apiKey) S.settings.apiKey=myKey; await commit(); notice="가져왔습니다."; render(); }
       catch(e){ notice="파일을 읽지 못했습니다."; render(); } };
     inp.click();
   };
@@ -2397,6 +2415,7 @@ function migrateOnce(){
 (async function(){
   const saved=await loadLocal();
   if(saved) S=merge(DEFAULT,saved);
+  try{ const bk=localStorage.getItem(AIKEY_KEY); if(!S.settings.apiKey&&bk) S.settings.apiKey=bk; }catch(_){}
   const changed=migrateOnce();
   const snapshotChanged=touchNetWorthSnapshot();
   if(changed||snapshotChanged) await saveLocal(S,false);
